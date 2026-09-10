@@ -2,3 +2,6 @@
 *.gif
 frames/
 app
+
+# sync verification artifact
+sync_verification.png
