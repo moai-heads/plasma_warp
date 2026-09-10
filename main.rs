@@ -31,31 +31,48 @@ enum Scene {
 // as maxed vibes. DO NOT "fix" the envelope to be snare-only; the kick
 // dominance is intended behavior.
 struct BeatSync {
-    beats: Vec<f32>, // extracted snare timestamps (seconds)
-    span: f32,       // TRUE audio file length -- must match the actual loop point
-    amp: f32,        // punch strength
+    beats: Vec<f32>,   // extracted snare timestamps (seconds) -- high band
+    kicks: Vec<f32>,   // extracted kick timestamps (seconds) -- low band (150Hz)
+    span: f32,         // TRUE audio file length -- must match the actual loop point
+    amp: f32,          // punch strength
 }
 impl BeatSync {
     fn load(path: &str, amp: f32, song_len: f32) -> Self {
         let txt = std::fs::read_to_string(path).expect("beats.txt");
         let beats: Vec<f32> = txt.lines().filter_map(|l| l.trim().parse().ok()).collect();
         assert!(!beats.is_empty(), "no beats");
-        BeatSync { span: song_len, beats, amp }
+        // kicks: optional channel; falls back to empty (scenes must handle it)
+        let kicks = std::fs::read_to_string("/root/plasma_warp/kicks.txt")
+            .map(|s| s.lines().filter_map(|l| l.trim().parse().ok()).collect())
+            .unwrap_or_default();
+        BeatSync { span: song_len, beats, kicks, amp }
+    }
+    /// time since the last hit of the given channel, cyclic over the song span
+    #[inline]
+    fn since(&self, t: f32, snare: bool) -> f32 {
+        let tc = t % self.span;
+        let v = if snare { &self.beats } else { &self.kicks };
+        let mut best: Option<f32> = None;
+        for &b in v { if b <= tc { best = Some(b); } else { break; } }
+        match best {
+            Some(b) => tc - b,
+            None => match v.last() {
+                Some(&b) => tc + self.span - b, // wrap-around gap
+                None => 1e9,                    // empty channel: never fires
+            },
+        }
     }
     #[inline]
     fn punch(&self, t: f32) -> f32 {
-        // wrap at the TRUE song length so renderer loop == audio loop, no drift.
-        // beat search is CYCLIC: before the first snare of a cycle, the "previous
-        // hit" is the last snare of the previous cycle (t - span), which handles
-        // the shortened gap across the loop boundary.
-        let tc = t % self.span;
-        let mut best: Option<f32> = None;
-        for &b in &self.beats { if b <= tc { best = Some(b); } else { break; } }
-        let e = match best {
-            Some(b) => tc - b,
-            None => tc + self.span - *self.beats.last().unwrap(), // wrap-around gap
-        };
+        // SNARE impulse: sharp, bright spring. Decays before the next kick (~0.4s).
+        let e = self.since(t, true);
         (-6.0 * e).exp() * (16.0 * e).sin() * self.amp
+    }
+    /// KICK impulse: deeper, slower, heavier -- bass hits deserve weight.
+    #[inline]
+    fn punch_kick(&self, t: f32) -> f32 {
+        let e = self.since(t, false);
+        (-3.5 * e).exp() * (10.0 * e).sin() * (self.amp * 1.35)
     }
 }
 
@@ -368,7 +385,7 @@ fn frame_skeleton(_st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     ImageBuffer::new(W as u32, H as u32)
 }
 
-fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, beat: &BeatSync) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, kick: f32, beat: &BeatSync) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     // scene-local snare schedule: global beats mapped into scene time (mod song span)
     let start: f32 = 16.0; // scene 2 begins at demo t=16s
     let mut ls: Vec<f32> = beat.beats.iter().map(|&b| (b - start).rem_euclid(beat.span)).collect();
@@ -408,7 +425,15 @@ fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, beat: &BeatSync) 
     let off = slide * (W as f32 * 0.75); // fully off-screen at start
     // diagonal seam through the bg rect center (slope k in screen space)
     let k = 0.45f32;
-    let bg_punch = if pumped <= 3 && st >= 1.5 { punch } else { 0.0 }; // pumps 1-3 incl. the shared drop beat
+    // bg sync channel: KICK throughout the scene. The intro (before the mesh
+    // lands) keeps the snare-driven intro pumps; after the drop the bg rides
+    // kicks only, so the mesh owns the snares.
+    let intro_kick = 0.0; // kicks before drop don't double-trigger the intro
+    let bg_punch = if st < drop_t {
+        if pumped <= 3 && st >= 1.5 { punch } else { intro_kick }
+    } else {
+        kick * 1.35
+    };
     for y in 0..H {
         for x in 0..W {
             // which piece? left of the diagonal seam = left piece
@@ -493,7 +518,7 @@ fn frame_for(scene: Scene, texs: &[&Tex; 3], blurs: &[&Tex; 3],
 {
     match scene {
         Scene::Rotozoom => frame_rotozoom(texs[t0], blurs[t0], texs[t1], blurs[t1], gt, mix, punch),
-        Scene::TriangleDance => frame_tri(texs[2], blurs[2], st, gt, punch, beat), // blue bg, pyramid w/ drop
+        Scene::TriangleDance => frame_tri(texs[2], blurs[2], st, gt, punch, beat.punch_kick(gt), beat), // blue bg; mesh=snare, bg=kick
         Scene::CyberPuzzle => frame_skeleton(st, gt), // placeholder until the effect lands
     }
 }
