@@ -68,11 +68,11 @@ impl BeatSync {
         let e = self.since(t, true);
         (-6.0 * e).exp() * (16.0 * e).sin() * self.amp
     }
-    /// KICK impulse: deeper, slower, heavier -- bass hits deserve weight.
+    /// KICK impulse: snap-in, settle fast (visually dead in ~0.35s).
     #[inline]
     fn punch_kick(&self, t: f32) -> f32 {
         let e = self.since(t, false);
-        (-3.5 * e).exp() * (10.0 * e).sin() * (self.amp * 1.35)
+        (-7.0 * e).exp() * (30.0 * e).sin() * (self.amp * 1.1)
     }
 }
 
@@ -447,7 +447,7 @@ fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, kick: f32, beat: 
                 continue;
             }
             // snare punch: bg zooms in a touch around its center, springs back
-            let bz = 1.0 + bg_punch * 1.8; // strong zoom for the shared drop beat
+            let bz = 1.0 + bg_punch * 1.0; // snap zoom, tuned down (was 1.8, too drastic)
             let bx = sx - dw * 0.5;
             let by = sy - dh * 0.5;
             let mut u = (bx / bz + dw * 0.5) / dw + wamp * (gt * 0.3 + y as f32 * 0.02).sin();
@@ -463,7 +463,7 @@ fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, kick: f32, beat: 
                      cs[1] + (cb[1] - cs[1]) * blurk,
                      cs[2] + (cb[2] - cs[2]) * blurk];
             // brightness flash rides the punch envelope -> the shared snare READS even on blurred bg
-            let flash = (1.0 + bg_punch.abs() * 3.0).min(1.6);
+            let flash = (1.0 + bg_punch.abs() * 1.5).min(1.3);
             img.put_pixel(x as u32, y as u32,
                 Rgb([(c[0] * dim * flash).min(255.0) as u8, (c[1] * dim * flash).min(255.0) as u8, (c[2] * dim * flash).min(255.0) as u8]));
         }
@@ -483,7 +483,7 @@ fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, kick: f32, beat: 
                          else { 0.5 + 0.5 * (1.0 - (u - (ls[6] - drop_t)) / 0.5).clamp(0.0, 1.0) };
         let refract = mesh_alpha < 1.0;
         draw_pyramid(&mut img, &mut depth, cx0, cy, yaw, pitch,
-                     H as f32 * (0.55 + 0.06 * (gt * 0.8).sin()), mesh_alpha, punch, refract);
+                     H as f32 * (0.55 + 0.06 * (gt * 0.8).sin()), mesh_alpha, 0.0, refract); // FOCUS MODE: mesh sync OFF
     } else if t_x >= 0.0 {
         // explosion: shards = small transparent refracting pyramids flying
         // out on parabolic (gravity) paths, down off the bottom of the screen
