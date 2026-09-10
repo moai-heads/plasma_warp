@@ -61,12 +61,33 @@ impl BeatSync {
 struct Tex {
     w: u32,
     h: u32,
-    px: Vec<u8>,
+    px: Vec<u8>,          // packed RGB, 3 bytes/px
+    alpha: Option<Vec<u8>>, // per-px alpha, only if source had transparency
 }
 impl Tex {
     fn load(p: &str) -> Self {
-        let img = image::open(Path::new(p)).expect("open tex").to_rgb8();
-        Tex { w: img.width(), h: img.height(), px: img.into_raw() }
+        let img = image::open(Path::new(p)).expect("open tex").to_rgba8();
+        let (w, h) = img.dimensions();
+        let raw = img.into_raw();
+        let mut px = Vec::with_capacity((w * h) as usize * 3);
+        let mut alpha = Vec::with_capacity((w * h) as usize);
+        for c in raw.chunks_exact(4) {
+            px.extend_from_slice(&c[0..3]);
+            alpha.push(c[3]);
+        }
+        // store alpha only if the image actually uses transparency
+        let alpha = if alpha.iter().any(|&a| a != 255) { Some(alpha) } else { None };
+        Tex { w, h, px, alpha }
+    }
+    /// sample RGB + alpha (0..1), clamped coords — for overlay-style drawing
+    #[inline]
+    fn sample_clamp_rgba(&self, u: f32, v: f32) -> ([f32; 3], f32) {
+        let x = ((u * (self.w as f32 - 1.0)) as usize).min(self.w as usize - 1);
+        let y = ((v * (self.h as f32 - 1.0)) as usize).min(self.h as usize - 1);
+        let i = y * self.w as usize + x;
+        let a = self.alpha.as_ref().map(|v| v[i] as f32 / 255.0).unwrap_or(1.0);
+        let j = i * 3;
+        ([self.px[j] as f32, self.px[j + 1] as f32, self.px[j + 2] as f32], a)
     }
     #[inline]
     fn sample(&self, u: f32, v: f32) -> [f32; 3] {
@@ -91,7 +112,14 @@ impl Tex {
             &ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(self.w, self.h, self.px.clone()).unwrap(),
             self.w / 8, self.h / 8, image::imageops::FilterType::Triangle);
         let up = image::imageops::resize(&small, self.w, self.h, image::imageops::FilterType::Triangle);
-        Tex { w: up.width(), h: up.height(), px: up.into_raw() }
+        let alpha = self.alpha.as_ref().map(|al| {
+            let small = image::imageops::resize(
+                &ImageBuffer::<image::Luma<u8>, Vec<u8>>::from_raw(self.w, self.h, al.clone()).unwrap(),
+                self.w / 8, self.h / 8, image::imageops::FilterType::Triangle);
+            let up = image::imageops::resize(&small, self.w, self.h, image::imageops::FilterType::Triangle);
+            up.into_raw()
+        });
+        Tex { w: up.width(), h: up.height(), px: up.into_raw(), alpha }
     }
 }
 
@@ -515,6 +543,7 @@ fn main() {
     let b = Tex::load("/root/plasma_warp/tex_green.png");
     let c = Tex::load("/root/plasma_warp/tex_blue.png");
     let d = Tex::load("/root/plasma_warp/tex_scene3.png"); // reserved: next scene (not used yet)
+    let e = Tex::load("/root/plasma_warp/tex_scene4.png"); // reserved: RGBA overlay sprite w/ transparent px (not used yet)
     let texs = [&a, &b, &c];
     let blur_a = a.blur();
     let blur_b = b.blur();
