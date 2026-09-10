@@ -514,6 +514,7 @@ fn main() {
     let a = Tex::load("/root/plasma_warp/tex_purple.png");
     let b = Tex::load("/root/plasma_warp/tex_green.png");
     let c = Tex::load("/root/plasma_warp/tex_blue.png");
+    let d = Tex::load("/root/plasma_warp/tex_scene3.png"); // reserved: next scene (not used yet)
     let texs = [&a, &b, &c];
     let blur_a = a.blur();
     let blur_b = b.blur();
