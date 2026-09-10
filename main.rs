@@ -14,6 +14,7 @@ const FADE_SECS: f32 = 1.5;   // fade-to-black / fade-in duration
 enum Scene {
     Rotozoom,
     TriangleDance,
+    CyberPuzzle, // skeleton: effect not implemented yet
 }
 
 // ---------------- Beat sync system (waveform-extracted) ----------------
@@ -297,6 +298,76 @@ fn fill_tri_flat(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut Vec<f32>,
     }
 }
 
+// Draw one pyramid (the whole mesh, or an explosion shard). refract=false:
+// opaque flat-shaded Solid faces. refract=true: transparent refracting glass
+// with green emissive, additive blend.
+#[allow(clippy::too_many_arguments)]
+fn draw_pyramid(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut Vec<f32>,
+                cx: f32, cy: f32, yaw: f32, pitch: f32, scale: f32,
+                alpha: f32, punch: f32, refract: bool) {
+    const PUNCH_MODE: MeshPunch = MeshPunch::SolidColor;
+    let v0 = [(0.0f32, 1.0f32, 0.0f32),
+              (1.0, -0.9, 0.0),
+              (-0.5, -0.9, 0.8660),
+              (-1.0, -0.9, -0.8660)];
+    let (cp, sp) = (pitch.cos(), pitch.sin());
+    let (cyw, syw) = (yaw.cos(), yaw.sin());
+    let mut rv = [(0.0f32, 0.0f32, 0.0f32); 4];
+    for k in 0..4 {
+        let (x, y, z) = v0[k];
+        let y2 = y * cp - z * sp;
+        let z2 = y * sp + z * cp;
+        let x3 = x * cyw + z2 * syw;
+        let z3 = -x * syw + z2 * cyw;
+        rv[k] = (x3, y2, z3);
+    }
+    let persp = 2.4f32;
+    let scale = scale * (1.0 + punch);
+    let proj = |p: (f32, f32, f32)| (cx + p.0 * scale / (persp - p.2), cy - p.1 * scale / (persp - p.2));
+    let l = {
+        let (x, y, z) = (0.5f32, -0.5f32, 0.75f32);
+        let il = 1.0 / (x * x + y * y + z * z).sqrt();
+        (x * il, y * il, z * il)
+    };
+    let faces = [(0usize, 1usize, 2usize), (0, 2, 3), (0, 3, 1), (1, 3, 2)];
+    let base_col = [(0.15f32, 0.55f32, 1.0f32), (0.2, 0.85, 1.0), (0.1, 0.45, 0.95), (0.35, 0.95, 1.0)];
+    for &(i0, i1, i2) in &faces {
+        let (ax, ay, az) = rv[i0]; let (bx, by, bz) = rv[i1]; let (cxx, cyy, czz) = rv[i2];
+        let e1 = (bx - ax, by - ay, bz - az);
+        let e2 = (cxx - ax, cyy - ay, czz - az);
+        let mut n = (e1.1 * e2.2 - e1.2 * e2.1, e1.2 * e2.0 - e1.0 * e2.2, e1.0 * e2.1 - e1.1 * e2.0);
+        let nl = (n.0 * n.0 + n.1 * n.1 + n.2 * n.2).sqrt();
+        if nl < 1e-6 { continue; }
+        n = (n.0 / nl, n.1 / nl, n.2 / nl);
+        let ctr = ((ax + bx + cxx) / 3.0, (ay + by + cyy) / 3.0, (az + bz + czz) / 3.0);
+        let view = (0.0 - ctr.0, 0.0 - ctr.1, persp - ctr.2);
+        let vl = (view.0 * view.0 + view.1 * view.1 + view.2 * view.2).sqrt();
+        let view = (view.0 / vl, view.1 / vl, view.2 / vl);
+        let mut ndl = n.0 * l.0 + n.1 * l.1 + n.2 * l.2;
+        if n.0 * view.0 + n.1 * view.1 + n.2 * view.2 < 0.0 { ndl = -ndl; }
+        let lam = 0.25 + 0.75 * ndl.max(0.0);
+        let punch_tint = match PUNCH_MODE { MeshPunch::SolidColor => 1.0 + punch.abs() * 2.0, MeshPunch::Glass => 1.0 };
+        let (br, bgc, bb) = base_col[(i0 + i1 + i2) as usize % 4];
+        let base = (br * punch_tint, bgc * punch_tint, bb * punch_tint);
+        let facing = (n.0 * view.0 + n.1 * view.1 + n.2 * view.2).abs();
+        let shift = 18.0 * (1.0 - facing);
+        let off = (n.0 * shift, n.1 * shift);
+        let surface = if refract { Surface::Refract { strength: shift, chroma: 0.15 } }
+                      else { Surface::Solid { base } };
+        let p = [proj(rv[i0]), proj(rv[i1]), proj(rv[i2])];
+        let mode = if refract { Blend::Add } else { Blend::Alpha };
+        fill_tri_flat(img, depth, p, [rv[i0].2, rv[i1].2, rv[i2].2],
+                      surface, lam, off, 0.15, alpha, mode);
+    }
+}
+
+// ---------------- Scene: CyberPuzzle (skeleton) ----------------
+// Placeholder: renders a dark idle frame so the timeline entry compiles and
+// dev mode can target it. The real effect gets written into frame_cyberpuzzle.
+fn frame_skeleton(_st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+    ImageBuffer::new(W as u32, H as u32)
+}
+
 fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, beat: &BeatSync) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     // scene-local snare schedule: global beats mapped into scene time (mod song span)
     let start: f32 = 16.0; // scene 2 begins at demo t=16s
@@ -304,6 +375,17 @@ fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, beat: &BeatSync) 
     ls.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let pumped: usize = ls.iter().filter(|&&b| b <= st).count();
     let drop_t = ls[2]; // mesh drops ON the 3rd snare
+    // explosion schedule: once transparent, the mesh syncs exactly 4 more
+    // times; on the 4th it explodes into shards.
+    let fade_done = (ls[6] - drop_t) + 0.5;
+    let tsyncs: Vec<f32> = ls.iter().map(|&b| b - drop_t)
+        .filter(|&b| b > fade_done).take(4).collect();
+    let explode_t = tsyncs.get(3).copied().unwrap_or(9.0);
+    let t_x = st - (drop_t + explode_t);
+    const SHARD_T: f32 = 1.6;
+    let t_wave = t_x - SHARD_T;
+    let wave_amp = if t_wave > 0.0 { smooth((t_wave / 0.5).min(1.0)) } else { 0.0 };
+    let fade_k = if t_wave > 0.0 { 1.0 - smooth((t_wave / 1.2).min(1.0)) } else { 1.0 };
     let mut img = ImageBuffer::new(W as u32, H as u32);
     // background: blurred blue texture drawn ONCE, centered (cover-fit), no wrap.
     // outside its rect = black. subtle wobble on the sampling uv (clamped).
@@ -347,6 +429,8 @@ fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, beat: &BeatSync) 
             let by = sy - dh * 0.5;
             let mut u = (bx / bz + dw * 0.5) / dw + wamp * (gt * 0.3 + y as f32 * 0.02).sin();
             let mut v = (by / bz + dh * 0.5) / dh + wamp * (gt * 0.24 + x as f32 * 0.019).cos();
+            u += wave_amp * 0.07 * (sy * 0.085 + gt * 5.0).sin();
+            v += wave_amp * 0.07 * (sx * 0.075 - gt * 4.2).cos();
             u = u.clamp(0.0, 1.0);
             v = v.clamp(0.0, 1.0);
             // blend sharp <-> blurred sample with the ramp
@@ -361,92 +445,40 @@ fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, beat: &BeatSync) 
                 Rgb([(c[0] * dim * flash).min(255.0) as u8, (c[1] * dim * flash).min(255.0) as u8, (c[2] * dim * flash).min(255.0) as u8]));
         }
     }
-    // pyramid drops in at st = DROP_T with spring overshoot, otherwise not drawn
-    if st < drop_t {
-        return img;
+    // whole mesh: drop -> 4 opaque syncs -> transparent refract glass
+    if st >= drop_t && t_x < 0.0 {
+        let u = st - drop_t;
+        let start_off = -(cy0 + H as f32 * 0.65);
+        let cy = cy0 + start_off * (-4.0 * u).exp() * (9.0 * u).cos();
+        let yaw = gt * 0.9;
+        let pitch = 0.45 + 0.2 * (gt * 0.5).sin();
+        let n_sync = ls.iter().skip(3).filter(|&&b| b <= st).count();
+        let mesh_alpha = if n_sync < 4 { 1.0 }
+                         else { 0.5 + 0.5 * (1.0 - (u - (ls[6] - drop_t)) / 0.5).clamp(0.0, 1.0) };
+        let refract = mesh_alpha < 1.0;
+        draw_pyramid(&mut img, &mut depth, cx0, cy, yaw, pitch,
+                     H as f32 * (0.55 + 0.06 * (gt * 0.8).sin()), mesh_alpha, punch, refract);
+    } else if t_x >= 0.0 {
+        // explosion: shards = small transparent refracting pyramids flying
+        // out on parabolic (gravity) paths, down off the bottom of the screen
+        for i in 0..SHARDS {
+            let fi = i as f32;
+            let fr1 = ((fi * 12.9898).sin() * 43758.5453).fract();
+            let fr2 = ((fi * 78.233).sin() * 12543.123).fract();
+            let vx = (fr1 - 0.5) * 460.0;
+            let vy0 = -(80.0 + 260.0 * fr2);
+            let g = 820.0;
+            let x = cx0 + vx * t_x;
+            let y = cy0 + vy0 * t_x + 0.5 * g * t_x * t_x;
+            if y < H as f32 + 150.0 && x > -150.0 && x < W as f32 + 150.0 {
+                let yaw = gt * 1.7 + fi * 1.3;
+                let pitch = 0.45 + 0.3 * (gt * 0.7 + fi).sin();
+                let s = H as f32 * 0.55 * (0.13 + 0.05 * fr2) * (1.0 + punch);
+                draw_pyramid(&mut img, &mut depth, x, y, yaw, pitch, s, 0.5, punch, true);
+            }
+        }
     }
-    let (cx0, cy0) = (W as f32 * 0.5, H as f32 * 0.52);
-    let u = st - drop_t;
-    // damped spring from above-screen to center: starts at top with zero velocity,
-    // falls with weight, overshoots past center, springs back. e^{-4u} decay, 9 rad/s.
-    let start_off = -(cy0 + H as f32 * 0.65); // displacement at drop start (above screen)
-    let cy = cy0 + start_off * (-4.0 * u).exp() * (9.0 * u).cos();
-    let yaw = gt * 0.9;
-    let pitch = 0.45 + 0.2 * (gt * 0.5).sin();
-    let scale = H as f32 * (0.55 + 0.06 * (gt * 0.8).sin()) * (1.0 + punch); // snare punch: scale pop, spring back
-    // transparency: solid until the mesh has synced with 4 snares since the
-    // drop, then a quick 0.5s fade to fully transparent (bg shines through).
-    let since: f32 = st - drop_t;
-    let n_sync = ls.iter().skip(3).filter(|&&b| b <= st).count(); // snares landed after drop (drop itself = #3)
-    // fades to a 50% floor (test build): bg shines through but mesh stays visible
-    let mesh_alpha: f32 = if n_sync < 4 { 1.0 }
-                          else { (0.5 + 0.5 * (1.0 - (since - (ls[6] - drop_t)) / 0.5).clamp(0.0, 1.0)) };
-    let mut v = [(0.0f32, 0.0f32, 0.0f32); 4];
-    v[0] = (0.0, 1.0, 0.0); // apex
-    for k in 0..3 {
-        let a = k as f32 * 2.0944;
-        v[k + 1] = (a.cos(), -0.9, a.sin());
-    }
-    let (cp, sp) = (pitch.cos(), pitch.sin());
-    let (cyw, syw) = (yaw.cos(), yaw.sin());
-    let mut rv = [(0.0f32, 0.0f32, 0.0f32); 4];
-    for k in 0..4 {
-        let (x, y, z) = v[k];
-        let y2 = y * cp - z * sp;
-        let z2 = y * sp + z * cp;
-        let x3 = x * cyw + z2 * syw;
-        let z3 = -x * syw + z2 * cyw;
-        rv[k] = (x3, y2, z3);
-    }
-    let persp = 2.4;
-    let proj = |p: (f32, f32, f32)| (cx0 + p.0 * scale / (persp - p.2), cy - p.1 * scale / (persp - p.2));
-    // GLOBAL light vector (fixed): direction of light travel, from a sun
-    // positioned above the camera and to the left, aimed into the scene.
-    // 45 deg downward: |y| == horizontal magnitude. Constant for all faces/frames.
-    let l = {
-        let (x, y, z) = (0.5f32, -0.5f32, 0.75f32); // rightward, downward, into scene
-        let il = 1.0 / (x * x + y * y + z * z).sqrt();
-        (x * il, y * il, z * il)
-    };
-    const PUNCH_MODE: MeshPunch = MeshPunch::SolidColor;
-    let faces = [(0usize, 1usize, 2usize), (0, 2, 3), (0, 3, 1), (1, 3, 2)];
-    let base_col = [(0.15f32, 0.55f32, 1.0f32), (0.2, 0.85, 1.0), (0.1, 0.45, 0.95), (0.35, 0.95, 1.0)];
-    let mut depth = vec![f32::INFINITY; W * H];
-    for &(i0, i1, i2) in &faces {
-        let (ax, ay, az) = rv[i0]; let (bx, by, bz) = rv[i1]; let (cxx, cyy, czz) = rv[i2];
-        let e1 = (bx - ax, by - ay, bz - az);
-        let e2 = (cxx - ax, cyy - ay, czz - az);
-        let mut n = (e1.1 * e2.2 - e1.2 * e2.1, e1.2 * e2.0 - e1.0 * e2.2, e1.0 * e2.1 - e1.1 * e2.0);
-        let nl = (n.0 * n.0 + n.1 * n.1 + n.2 * n.2).sqrt();
-        if nl < 1e-6 { continue; }
-        n = (n.0 / nl, n.1 / nl, n.2 / nl);
-        let ctr = ((ax + bx + cxx) / 3.0, (ay + by + cyy) / 3.0, (az + bz + czz) / 3.0);
-        let view = (0.0 - ctr.0, 0.0 - ctr.1, persp - ctr.2);
-        let vl = (view.0 * view.0 + view.1 * view.1 + view.2 * view.2).sqrt();
-        let view = (view.0 / vl, view.1 / vl, view.2 / vl);
-        let mut ndl = n.0 * l.0 + n.1 * l.1 + n.2 * l.2;
-        if n.0 * view.0 + n.1 * view.1 + n.2 * view.2 < 0.0 { ndl = -ndl; }
-        let lam = 0.25 + 0.75 * ndl.max(0.0);
-        // punch tint only in SolidColor mode; Glass stays pure bg-through-refraction
-        let punch_tint = match PUNCH_MODE { MeshPunch::SolidColor => 1.0 + punch.abs() * 2.0, MeshPunch::Glass => 1.0 };
-        let (br, bgc, bb) = base_col[(i0 + i1 + i2) as usize % 4];
-        let base = (br * punch_tint, bgc * punch_tint, bb * punch_tint);
-        // refraction offset: faces angled away from the camera shift bg more.
-        // normal.xy drives the direction; strength scales the pixel shift.
-        let facing = (n.0 * view.0 + n.1 * view.1 + n.2 * view.2).abs();
-        let shift = 18.0 * (1.0 - facing);
-        let off = (n.0 * shift, n.1 * shift);
-        // phase-driven: flat Solid while opaque; Refract+green glow only once transparent
-        let surface = if mesh_alpha < 1.0 {
-            Surface::Refract { strength: shift, chroma: 0.15 }
-        } else {
-            Surface::Solid { base }
-        };
-        let p = [proj(rv[i0]), proj(rv[i1]), proj(rv[i2])];
-        let mode = if mesh_alpha < 1.0 { Blend::Add } else { Blend::Alpha };
-        fill_tri_flat(&mut img, &mut depth, p, [rv[i0].2, rv[i1].2, rv[i2].2],
-                      surface, lam, off, 0.15, mesh_alpha, mode);
-    }
+    if fade_k < 1.0 { fade(&mut img, fade_k); }
     img
 }
 
@@ -459,6 +491,7 @@ fn frame_for(scene: Scene, texs: &[&Tex; 3], blurs: &[&Tex; 3],
     match scene {
         Scene::Rotozoom => frame_rotozoom(texs[t0], blurs[t0], texs[t1], blurs[t1], gt, mix, punch),
         Scene::TriangleDance => frame_tri(texs[2], blurs[2], st, gt, punch, beat), // blue bg, pyramid w/ drop
+        Scene::CyberPuzzle => frame_skeleton(st, gt), // placeholder until the effect lands
     }
 }
 
@@ -473,6 +506,7 @@ fn parse_scene(s: &str) -> Option<Scene> {
     match s {
         "rotozoom" => Some(Scene::Rotozoom),
         "triangledance" | "triangles" | "tri" => Some(Scene::TriangleDance),
+        "cyberpuzzle" | "puzzle" => Some(Scene::CyberPuzzle),
         _ => None,
     }
 }
