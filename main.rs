@@ -445,6 +445,9 @@ fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, beat: &BeatSync) 
                 Rgb([(c[0] * dim * flash).min(255.0) as u8, (c[1] * dim * flash).min(255.0) as u8, (c[2] * dim * flash).min(255.0) as u8]));
         }
     }
+    let (cx0, cy0) = (W as f32 * 0.5, H as f32 * 0.52);
+    let mut depth = vec![f32::INFINITY; W * H];
+    const SHARDS: usize = 9;
     // whole mesh: drop -> 4 opaque syncs -> transparent refract glass
     if st >= drop_t && t_x < 0.0 {
         let u = st - drop_t;
@@ -521,7 +524,7 @@ fn render_range(scene: Scene, start: f32, dur: f32,
                 demo_fade_in: bool, fade_out: bool, wrap: bool, idx0: usize)
     -> usize
 {
-    let scene_segs = match scene { Scene::Rotozoom => [0usize, 1], Scene::TriangleDance => [2, 1] };
+    let scene_segs = match scene { Scene::Rotozoom => [0usize, 1], Scene::TriangleDance => [2, 1], Scene::CyberPuzzle => [3, 3] }; // CyberPuzzle: reserved texture slot, idle for now
     let show = (SEG_SECS * FPS as f32) as usize;
     let d = (FADE_SECS * FPS as f32) as usize;
     let total = (dur * FPS as f32) as usize;
@@ -563,6 +566,7 @@ fn render_range(scene: Scene, start: f32, dur: f32,
                     mix_frames(&mut frame, &nf, k);
                 }
             }
+            Scene::CyberPuzzle => {} // skeleton: no choreography yet
         }
         frame.save(format!("/root/plasma_warp/frames/f{:05}.png", idx)).unwrap();
         idx += 1;
