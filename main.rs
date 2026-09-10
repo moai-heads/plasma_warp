@@ -428,12 +428,10 @@ fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, kick: f32, beat: 
     // bg sync channel: KICK throughout the scene. The intro (before the mesh
     // lands) keeps the snare-driven intro pumps; after the drop the bg rides
     // kicks only, so the mesh owns the snares.
-    let intro_kick = 0.0; // kicks before drop don't double-trigger the intro
-    let bg_punch = if st < drop_t {
-        if pumped <= 3 && st >= 1.5 { punch } else { intro_kick }
-    } else {
-        kick * 1.35
-    };
+    // FOCUS MODE: kick-only calibration. Snare syncs on bg temporarily OFF
+    // (incl. the intro pumps) so we can dial the kick channel in cleanly.
+    let bg_punch = if st >= 1.5 { kick * 1.35 } else { 0.0 };
+    let _ = pumped;
     for y in 0..H {
         for x in 0..W {
             // which piece? left of the diagonal seam = left piece
