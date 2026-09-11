@@ -593,9 +593,10 @@ fn draw_textured_quad_tint(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut 
 }
 
 // Grid resolution for the CyberPuzzle quad. Adjustable at runtime via env so
-// no single value is hard-coded (default 8x6); see cyberpuzzle_grid().
-const CYBERPUZZLE_COLS: usize = 8;
-const CYBERPUZZLE_ROWS: usize = 6;
+// Grid resolution for the CyberPuzzle quad. Adjustable at runtime via env so
+// no single value is hard-coded (default 4x4); see cyberpuzzle_grid().
+const CYBERPUZZLE_COLS: usize = 4;
+const CYBERPUZZLE_ROWS: usize = 4;
 // MAXIMUM full rotations a piece makes about its own (hashed) axis during the
 // fly; the actual per-piece amount is hashed between MIN and this.
 const CYBERPUZZLE_MAX_TURNS: f32 = 2.0;
@@ -607,14 +608,24 @@ const CYBERPUZZLE_ORIGIN_X: f32 = -260.0;
 const CYBERPUZZLE_ORIGIN_Y: f32 = (H as f32) + 200.0;
 const CYBERPUZZLE_ORIGIN_JITTER: f32 = 240.0;
 // Per-piece flight duration and the window over which launch times are spread.
-// A piece launches at L_i (staggered across [0, STAGGER_WINDOW]) and lands at
-// L_i + FLY_DUR, so with FLY_DUR+WINDOW <= scene length every piece is down in
-// time. This creates the STREAM: pieces leave the corner one after another.
 const CYBERPUZZLE_FLY_DUR: f32 = 1.7;
 // Front-loading of the flight curve: 0 = linear, larger = pieces fly faster off
 // the origin and coast into place. Slope ratio (start:end) is e^k.
 const CYBERPUZZLE_EASE_K: f32 = 3.5;
 const CYBERPUZZLE_STAGGER_WINDOW: f32 = 2.0;
+// SHARED-VERTEX SHAPE DISPLACEMENT (wabunja's scheme):
+// The grid is ONE watertight mesh of shared vertices -- vertex (gi,gj) is owned
+// jointly by every piece touching it, so a boundary vertex moved for one piece
+// is moved for its neighbours by definition (they read the same point).
+// Each INTERIOR vertex carries a deterministic IN-PLANE offset (z untouched),
+// RADIUS-bounded to a fraction of the cell size (< half a cell) so no triangle
+// can invert or overlap and the planar map stays one-to-one. Image-edge
+// vertices are pinned -- moving one would move the silhouette.
+// Each piece's UVs are the PLANAR PROJECTION of the vertex rest position, so
+// displacing vertices re-meshes the SAME plane without changing the picture:
+// at s=0 (assembled) the deformed grid still reproduces the exact texture.
+// RULE: offset radius < 0.5 * cell. We use AMP * cell (AMP clamped < 0.49).
+const CYBERPUZZLE_SHAPE_AMP: f32 = 0.35; // fraction of min cell size; 0 = off
 
 fn cyberpuzzle_grid() -> (usize, usize) {
     let n = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
@@ -622,31 +633,66 @@ fn cyberpuzzle_grid() -> (usize, usize) {
      n("CYBERPUZZLE_ROWS", CYBERPUZZLE_ROWS).max(1))
 }
 
+fn cyberpuzzle_shape_amp() -> f32 {
+    std::env::var("CYBERPUZZLE_SHAPE_AMP").ok().and_then(|v| v.parse().ok())
+        .unwrap_or(CYBERPUZZLE_SHAPE_AMP).clamp(0.0, 0.49)
+}
+
+// Build the shared-vertex grid of a qw x qh quad: (cols+1)*(rows+1) vertices,
+// row-major. Interior vertices get a hashed in-plane offset (radius <= amp*cell
+// < half a cell). Returns (positions, uvs); each uv is the planar projection of
+// the offset rest position -- this is what keeps the assembled image exact.
+// Index: gj*(cols+1)+gi.
+fn cyberpuzzle_vertices(cols: usize, rows: usize, qw: f32, qh: f32, amp: f32)
+    -> (Vec<V3>, Vec<(f32, f32)>) {
+    let cell = (qw / cols as f32).min(qh / rows as f32);
+    let maxd = cell * amp;
+    let nv = (cols + 1) * (rows + 1);
+    let mut pos = Vec::with_capacity(nv);
+    let mut uv = Vec::with_capacity(nv);
+    for gj in 0..=rows {
+        for gi in 0..=cols {
+            let x = -qw * 0.5 + qw * (gi as f32) / (cols as f32);
+            let y =  qh * 0.5 - qh * (gj as f32) / (rows as f32);
+            let interior = gi > 0 && gi < cols && gj > 0 && gj < rows;
+            let (dx, dy) = if interior && maxd > 0.0 {
+                let ang = hash01(gi, gj, 21.0) * std::f32::consts::TAU;
+                let rad = hash01(gi, gj, 22.0) * maxd;        // bounded RADIUS
+                (rad * ang.cos(), rad * ang.sin())
+            } else { (0.0, 0.0) };
+            let (px, py) = (x + dx, y + dy);
+            pos.push(V3::new(px, py, 0.0));
+            // planar projection of the (displaced) rest position, NOT a frozen
+            // grid uv -- so the plane re-meshes without warping the picture.
+            uv.push(((px + qw * 0.5) / qw, (qh * 0.5 - py) / qh));
+        }
+    }
+    (pos, uv)
+}
+
 fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     let mut img = ImageBuffer::new(W as u32, H as u32);
     let mut depth = vec![f32::INFINITY; W * H];
-    // STAGE 3: pieces fly in. Each cell carries a deterministic 3D offset
-    // (translation + rotation); ONE scaler s interpolates it from the flying
-    // state (s=1) to the exact assembled grid (s=0). No per-piece state.
     let (cols, rows) = cyberpuzzle_grid();
     let (qw, qh) = fit_letterbox(tex.w as f32, tex.h as f32);
+    let amp = cyberpuzzle_shape_amp();
+    // ONE shared mesh; pieces are index windows into it, so shared boundary
+    // vertices (and their uvs) are literally the same points -> watertight.
+    let (vpos, vuv) = cyberpuzzle_vertices(cols, rows, qw, qh, amp);
+    let vidx = |gi: usize, gj: usize| gj * (cols + 1) + gi;
     let center = V3::new(0.0, 0.0, CAM_D);
     let fly_dur = CYBERPUZZLE_FLY_DUR;
     let stagger = CYBERPUZZLE_STAGGER_WINDOW;
-    const FORCE: Option<f32> = None; // (kept for clarity; env override below)
-    let _ = FORCE;
     let force_s: Option<f32> = std::env::var("CYBERPUZZLE_FORCE_S").ok().and_then(|v| v.parse().ok());
     let tint_on = std::env::var_os("CYBERPUZZLE_TINT").is_some();
-    // CYBERPUZZLE_SPIN = radians/sec of global yaw applied once assembled
-    // (demo only). Default 0 keeps the assembled faces uniformly lam=1.0.
     let spin_rate: f32 = std::env::var("CYBERPUZZLE_SPIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
     let spin = spin_rate * (st - (stagger + fly_dur)).max(0.0);
-    let lx = |i: usize| -qw * 0.5 + qw * (i as f32) / (cols as f32);
-    let ly = |j: usize|  qh * 0.5 - qh * (j as f32) / (rows as f32);
     for j in 0..rows {
         for i in 0..cols {
-            let (x0, x1) = (lx(i), lx(i + 1));
-            let (y0, y1) = (ly(j), ly(j + 1));
+            // the piece's four SHARED corners, in [TL, TR, BR, BL] order
+            let ci = [vidx(i, j), vidx(i + 1, j), vidx(i + 1, j + 1), vidx(i, j + 1)];
+            let base = [vpos[ci[0]], vpos[ci[1]], vpos[ci[2]], vpos[ci[3]]];
+            let uvs = [vuv[ci[0]], vuv[ci[1]], vuv[ci[2]], vuv[ci[3]]];
             // per-piece launch time: stream order runs from the lower-left cell
             // (first to launch) to the upper-right cell (last to launch), so the
             // pieces cascade from the corner toward the upper right.
@@ -654,22 +700,18 @@ fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u
             let ky = if rows > 1 { (rows - 1 - j) as f32 / (rows - 1) as f32 } else { 0.0 };
             let key = (kx + ky) * 0.5;                 // 0 lower-left .. 1 upper-right
             let launch = key * stagger;
-            // linear flight progress: 1 before launch -> 0 when landed
             let e = ((st - launch) / fly_dur).clamp(0.0, 1.0); // elapsed fraction
             let mut prog = 1.0 - e;                            // 1 -> 0 (drives spin)
             let mut s = ease_out_expo(e, CYBERPUZZLE_EASE_K);  // 1 -> 0 (drives position)
             if let Some(f) = force_s { s = f; prog = if f == 0.0 { 0.0 } else { 1.0 }; }
-            let base = [
-                V3::new(x0, y0, 0.0), // TL
-                V3::new(x1, y0, 0.0), // TR
-                V3::new(x1, y1, 0.0), // BR
-                V3::new(x0, y1, 0.0), // BL
-            ];
-            // cell center in quad space (rotation pivot)
-            let cc = V3::new((x0 + x1) * 0.5, (y0 + y1) * 0.5, 0.0);
-            // shared fly-in origin: just off the bottom-right corner, jittered
-            // per piece. Offsets are (origin - cell); scaled by s they move the
-            // piece from the origin to its assembled cell.
+            // pivot = centroid of the (displaced) piece
+            let cc = V3::new(
+                (base[0].x + base[1].x + base[2].x + base[3].x) * 0.25,
+                (base[0].y + base[1].y + base[2].y + base[3].y) * 0.25,
+                0.0);
+            // shared fly-in origin: just off the lower-left corner, jittered per
+            // piece. Offset = (origin - cell); scaled by s it moves the piece
+            // from the origin to its assembled cell.
             let ox_px = CYBERPUZZLE_ORIGIN_X + (hash01(i, j, 7.0) - 0.5) * CYBERPUZZLE_ORIGIN_JITTER;
             let oy_px = CYBERPUZZLE_ORIGIN_Y + (hash01(i, j, 8.0) - 0.5) * CYBERPUZZLE_ORIGIN_JITTER;
             // screen px -> world at the quad plane (1 unit == 1 px at z=CAM_D)
@@ -678,37 +720,26 @@ fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u
             let dz = hash01(i, j, 9.0) * 400.0;            // 0..400 farther
             let dx = ox_w - cc.x;
             let dy = oy_w - cc.y;
-            // per-piece tumble about a hashed axis: TURNS full rotations over
-            // the fly, plus a small tilt so pieces don't all start flat.
+            // per-piece tumble about a hashed axis + hashed turn count (< MAX),
+            // so any integer-ish amount still returns to identity at landing.
             let ax_raw = V3::new(hash01(i, j, 3.0) - 0.5,
                                  hash01(i, j, 4.0) - 0.5,
                                  hash01(i, j, 5.0) - 0.5);
             let axis = if ax_raw.dot(ax_raw) < 1e-6 { V3::new(1.0, 0.0, 0.0) } else { ax_raw.norm() };
             let tilt = (hash01(i, j, 6.0) - 0.5) * 2.0;          // radians
-            // hashed rotation amount per piece, capped at CYBERPUZZLE_MAX_TURNS
             let turns = CYBERPUZZLE_MIN_TURNS
                 + (CYBERPUZZLE_MAX_TURNS - CYBERPUZZLE_MIN_TURNS) * hash01(i, j, 10.0);
-            // prog: 1 at start -> 0 assembled. turns*2pi -> identity at both.
             let ang = (turns * std::f32::consts::TAU + tilt) * prog;
             let mut corners = [V3::new(0.0, 0.0, 0.0); 4];
             for k in 0..4 {
-                let rel = base[k].sub(cc);                       // about cell center
-                let r = rot_axis(rel, axis, ang);                // N-full-turn tumble
+                let rel = base[k].sub(cc);                       // about piece centroid
+                let r = rot_axis(rel, axis, ang);                // tumble
                 let pos = V3::new(cc.x + r.x + dx * s,
                                   cc.y + r.y + dy * s,
                                   cc.z + r.z + dz * s);
-                // optional global spin of the whole assembly (demo only; kills
-                // the uniform lam=1.0, which is the point -- it shows shading).
                 let pos = if spin != 0.0 { rot3(pos, spin, 0.0, 0.0) } else { pos };
                 corners[k] = V3::new(center.x + pos.x, center.y + pos.y, center.z + pos.z);
             }
-            // uv: one shared texture across the whole grid -> tiles are literal
-            // fragments of the image (uv slice per cell).
-            let u0 = i as f32 / cols as f32;
-            let u1 = (i + 1) as f32 / cols as f32;
-            let v0 = j as f32 / rows as f32;
-            let v1 = (j + 1) as f32 / rows as f32;
-            let uvs = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)];
             // DEBUG: tint alternating cells so the grid is visible. TINT=1.
             if tint_on {
                 let t = if (i + j) % 2 == 0 { 1.0 } else { 0.5 };
