@@ -63,6 +63,21 @@ file; this one is ours, versioned in the repo, and safe to read and edit here.
 - Deliverable = one zip: source + `Cargo.toml` + `Cargo.lock` + `README.md` +
   assets. Never ship `target/` or a populated cargo cache.
 
+## 7b. Asset secrecy (media must NEVER reach GitHub)
+- **Media assets = image + sound**, without exception: `*.png *.jpg *.jpeg
+  *.gif *.bmp *.webp *.tga *.tif *.ogg *.mp3 *.wav *.m4a *.aac *.flac *.opus
+  *.mp4 *.mov *.avi *.mkv`. They are git-ignored and distributed separately.
+- **Sync data (`beats.txt`, `kicks.txt`) IS tracked** and may live on GitHub.
+- Before ANY push, verify the *entire* object store, not just the tip tree:
+  `git cat-file --batch-all-objects --batch-check=...` + magic-byte scan
+  (`89 50 4e 47` PNG, `4f 67 67 53` Ogg, `00 00 00 1c` M4A, `ff d8 ff` JPEG).
+- If an asset ever reached a **public** remote, `git push --force` is NOT
+  enough: it moves the branch pointer, but the old objects stay fetchable by
+  SHA until GitHub GCs (which it does not do on request). **The only reliable
+  remedy is: delete the remote repo, purge the asset from local history
+  (`git filter-branch`/`filter-repo`), then recreate + push.** (Done once,
+  2026-09-11, when `seg.m4a` leaked via history.)
+
 ## 8. Audio (SDL3_mixer)
 - Realtime playback uses **SDL3_mixer** (`sdl3` crate `mixer` feature) — it
   loads `meltdown_beat.ogg` and loops it. No hand-rolled PCM/lewton path.
