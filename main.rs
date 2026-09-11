@@ -585,8 +585,16 @@ fn draw_textured_quad_tint(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut 
 // no single value is hard-coded (default 8x6); see cyberpuzzle_grid().
 const CYBERPUZZLE_COLS: usize = 8;
 const CYBERPUZZLE_ROWS: usize = 6;
-// Full rotations each piece makes about its own (hashed) axis during the fly.
-const CYBERPUZZLE_TURNS: f32 = 3.0;
+// MAXIMUM full rotations a piece makes about its own (hashed) axis during the
+// fly; the actual per-piece amount is hashed between MIN and this.
+const CYBERPUZZLE_MAX_TURNS: f32 = 2.0;
+const CYBERPUZZLE_MIN_TURNS: f32 = 0.4;
+// Where pieces launch from: just outside the camera at the bottom-right corner
+// (screen px offsets beyond W/H), plus hashed jitter so they don't stack. This
+// is the shared fly-in origin; each piece interpolates from here to its cell.
+const CYBERPUZZLE_ORIGIN_X: f32 = (W as f32) + 220.0;
+const CYBERPUZZLE_ORIGIN_Y: f32 = (H as f32) + 160.0;
+const CYBERPUZZLE_ORIGIN_JITTER: f32 = 240.0;
 
 fn cyberpuzzle_grid() -> (usize, usize) {
     let n = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
@@ -631,10 +639,17 @@ fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u
             ];
             // cell center in quad space (rotation pivot)
             let cc = V3::new((x0 + x1) * 0.5, (y0 + y1) * 0.5, 0.0);
-            // deterministic per-cell flying offset
-            let dx = (hash01(i, j, 0.0) - 0.5) * 900.0;
-            let dy = (hash01(i, j, 1.0) - 0.5) * 700.0;
-            let dz = (0.35 + 0.65 * hash01(i, j, 2.0)) * 700.0; // start farther (smaller)
+            // shared fly-in origin: just off the bottom-right corner, jittered
+            // per piece. Offsets are (origin - cell); scaled by s they move the
+            // piece from the origin to its assembled cell.
+            let ox_px = CYBERPUZZLE_ORIGIN_X + (hash01(i, j, 7.0) - 0.5) * CYBERPUZZLE_ORIGIN_JITTER;
+            let oy_px = CYBERPUZZLE_ORIGIN_Y + (hash01(i, j, 8.0) - 0.5) * CYBERPUZZLE_ORIGIN_JITTER;
+            // screen px -> world at the quad plane (1 unit == 1 px at z=CAM_D)
+            let ox_w = (ox_px - CX_PX) * CAM_D / CAM_F;
+            let oy_w = (CY_PX - oy_px) * CAM_D / CAM_F;
+            let dz = hash01(i, j, 9.0) * 400.0;            // 0..400 farther
+            let dx = ox_w - cc.x;
+            let dy = oy_w - cc.y;
             // per-piece tumble about a hashed axis: TURNS full rotations over
             // the fly, plus a small tilt so pieces don't all start flat.
             let ax_raw = V3::new(hash01(i, j, 3.0) - 0.5,
@@ -642,8 +657,11 @@ fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u
                                  hash01(i, j, 5.0) - 0.5);
             let axis = if ax_raw.dot(ax_raw) < 1e-6 { V3::new(1.0, 0.0, 0.0) } else { ax_raw.norm() };
             let tilt = (hash01(i, j, 6.0) - 0.5) * 2.0;          // radians
-            // prog: 1 at start -> 0 assembled. TURNS*2pi -> identity at both.
-            let ang = (CYBERPUZZLE_TURNS * std::f32::consts::TAU + tilt) * prog;
+            // hashed rotation amount per piece, capped at CYBERPUZZLE_MAX_TURNS
+            let turns = CYBERPUZZLE_MIN_TURNS
+                + (CYBERPUZZLE_MAX_TURNS - CYBERPUZZLE_MIN_TURNS) * hash01(i, j, 10.0);
+            // prog: 1 at start -> 0 assembled. turns*2pi -> identity at both.
+            let ang = (turns * std::f32::consts::TAU + tilt) * prog;
             let mut corners = [V3::new(0.0, 0.0, 0.0); 4];
             for k in 0..4 {
                 let rel = base[k].sub(cc);                       // about cell center
