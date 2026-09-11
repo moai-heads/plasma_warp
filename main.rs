@@ -74,6 +74,9 @@ impl BeatSync {
     #[inline]
     fn punch(&self, t: f32) -> f32 {
         // SNARE impulse: sharp, bright spring. Decays before the next kick (~0.4s).
+        // debug/A-B knob: PLASMA_NO_SNARE=1 silences this channel so a render
+        // can be diffed against the normal one to ISOLATE the snare's effect.
+        if std::env::var_os("PLASMA_NO_SNARE").is_some() { return 0.0; }
         let e = self.since(t, true);
         (-6.0 * e).exp() * (16.0 * e).sin() * self.amp
     }
@@ -506,8 +509,11 @@ fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, kick: f32, beat: 
         let mesh_alpha = if n_sync < 4 { 1.0 }
                          else { 0.5 + 0.5 * (1.0 - (u - (ls[6] - drop_t)) / 0.5).clamp(0.0, 1.0) };
         let refract = mesh_alpha < 1.0;
+        // mesh rides the SNARE channel (punch): scale pop + (while opaque) the
+        // SolidColor tint flash. bg keeps the kick channel, so the two layers
+        // now have independent rhythms again -- snare = mesh, kick = bg.
         draw_pyramid(&mut img, &mut depth, cx0, cy, yaw, pitch,
-                     H as f32 * (0.55 + 0.06 * (gt * 0.8).sin()), mesh_alpha, 0.0, refract); // FOCUS MODE: mesh sync OFF
+                     H as f32 * (0.55 + 0.06 * (gt * 0.8).sin()), mesh_alpha, punch, refract);
     } else if t_x >= 0.0 {
         // explosion: shards = small transparent refracting pyramids flying
         // out on parabolic (gravity) paths, down off the bottom of the screen
