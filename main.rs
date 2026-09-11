@@ -17,19 +17,21 @@ enum Scene {
     CyberPuzzle, // skeleton: effect not implemented yet
 }
 
-// ---------------- Beat sync system (waveform-extracted) ----------------
-// Snare timestamps are EXTRACTED from the audio waveform offline:
-//   1. decode ogg -> mono f32 PCM (ffmpeg)
-//   2. high-frequency energy envelope (snares are bright; kicks are low)
-//   3. comb-fit period + phase over the envelope -> grid of hit times
-//   4. grid written to beats.txt; renderer reads it at startup.
-// punch(t) returns a damped-sine impulse around each real snare timestamp.
-// DESIGN NOTE (locked 2026-09-10, by user decree): the punch envelope's
-// secondary lobe lands ~half a snare period later, which coincides with the
-// track's KICK transients (beat is kick-snare at double rate). This makes the
-// visuals pulse dominantly on the KICKS — an accidental discovery that tested
-// as maxed vibes. DO NOT "fix" the envelope to be snare-only; the kick
-// dominance is intended behavior.
+// ---------------- Beat sync system (hand-labelled ground truth) ----------------
+// Both channels are HAND-LABELLED in Audacity (label tracks, exported as plain
+// text) and committed. No onset detection exists anywhere in this project --
+// do not reintroduce it. If the sync is wrong, fix the labels, not the code.
+//   beats.txt : 24 SNARE onsets   (meltdown_beat.ogg)
+//   kicks.txt : 36 KICK onsets    (meltdown_beat.ogg)
+// Grid the labels trace: 4/4 at ~103.4 BPM (bar = 2.321 s, beat = 0.580 s).
+// Snare sits on beats 2 & 4; kick sits on beats 1 & 3 plus the "and" of 3, i.e.
+// three kicks per bar. Labels keep the performance's natural micro-timing
+// (spacing jitters +/- 15 ms); that jitter is authentic and is NOT quantised.
+// punch(t)/punch_kick(t) return damped-sine impulses around the most recent
+// labelled hit of their channel, wrapping cyclically at the song length.
+// DESIGN NOTE (locked 2026-09-10, by user decree): keep the snare impulse's
+// springy envelope -- its secondary lobe adds a second visual pulse between
+// snares and tests as maxed vibes. DO NOT "fix" it to be snare-only.
 struct BeatSync {
     beats: Vec<f32>,   // extracted snare timestamps (seconds) -- high band
     kicks: Vec<f32>,   // extracted kick timestamps (seconds) -- low band (150Hz)
@@ -37,14 +39,21 @@ struct BeatSync {
     amp: f32,          // punch strength
 }
 impl BeatSync {
-    fn load(path: &str, amp: f32, song_len: f32) -> Self {
-        let txt = std::fs::read_to_string(path).expect("beats.txt");
-        let beats: Vec<f32> = txt.lines().filter_map(|l| l.trim().parse().ok()).collect();
-        assert!(!beats.is_empty(), "no beats");
-        // kicks: optional channel; falls back to empty (scenes must handle it)
-        let kicks = std::fs::read_to_string("/root/plasma_warp/kicks.txt")
-            .map(|s| s.lines().filter_map(|l| l.trim().parse().ok()).collect())
-            .unwrap_or_default();
+    fn load(beats_path: &str, kicks_path: &str, amp: f32, song_len: f32) -> Self {
+        let read = |p: &str| -> Vec<f32> {
+            // one timestamp per line; '#' comment lines are skipped
+            std::fs::read_to_string(p)
+                .unwrap_or_else(|e| panic!("cannot read {p}: {e}"))
+                .lines()
+                .filter_map(|l| l.trim().parse().ok())
+                .collect()
+        };
+        let beats = read(beats_path);
+        let kicks = read(kicks_path);
+        assert!(!beats.is_empty(), "beats.txt is empty");
+        assert!(!kicks.is_empty(), "kicks.txt is empty");
+        assert!(beats.windows(2).all(|w| w[1] > w[0]), "beats.txt must be sorted");
+        assert!(kicks.windows(2).all(|w| w[1] > w[0]), "kicks.txt must be sorted");
         BeatSync { span: song_len, beats, kicks, amp }
     }
     /// time since the last hit of the given channel, cyclic over the song span
@@ -610,7 +619,9 @@ fn main() {
     let blur_b = b.blur();
     let blur_c = c.blur();
     let blurs = [&blur_a, &blur_b, &blur_c];
-    let beat = BeatSync::load("/root/plasma_warp/beats.txt", 0.22, SONG_LEN);
+    let beat = BeatSync::load("/root/plasma_warp/beats.txt",
+                                "/root/plasma_warp/kicks.txt",
+                                0.22, SONG_LEN);
 
     // TIMELINE: (scene, demo_start_sec, duration_sec) -- the sync contract.
     let timeline: Vec<(Scene, f32, f32)> = vec![
