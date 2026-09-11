@@ -77,11 +77,26 @@ impl BeatSync {
         let e = self.since(t, true);
         (-6.0 * e).exp() * (16.0 * e).sin() * self.amp
     }
-    /// KICK impulse: snap-in, settle fast (visually dead in ~0.35s).
+    /// KICK impulse: subtle one-bounce thump that settles to a DEAD STILL by
+    /// KICK_TAU = 0.40s, so the bg is motionless and ready for the next kick.
+    ///   - decay KICK_DECAY=12.0 -> envelope is e^-4.8 = 0.008 of peak at 0.4s
+    ///   - freq  KICK_FREQ=4*pi/0.4 -> the sine lands exactly on a zero crossing
+    ///     at 0.4s, so there is no residual wobble, it simply stops.
+    ///   - amp is scaled down (KICK_GAIN) to keep the move SUBTLE.
     #[inline]
     fn punch_kick(&self, t: f32) -> f32 {
+        const KICK_TAU: f32 = 0.40;
+        const KICK_DECAY: f32 = 12.0;          // e^-4.8 at KICK_TAU
+        const KICK_FREQ: f32 = 31.4159;         // 4*pi/0.4: zero crossing at KICK_TAU
+        const KICK_GAIN: f32 = 0.55;            // subtle
+        // debug/A-B knob: PLASMA_NO_KICK=1 silences the channel so a render can
+        // be diffed against the normal one to ISOLATE the kick's contribution.
+        if std::env::var_os("PLASMA_NO_KICK").is_some() { return 0.0; }
         let e = self.since(t, false);
-        (-7.0 * e).exp() * (30.0 * e).sin() * (self.amp * 1.1)
+        if e >= KICK_TAU { return 0.0; }        // hard stop: dead still after 0.4s
+        // ease the envelope to exactly zero at KICK_TAU so the hard stop is smooth
+        let tail = 1.0 - (e / KICK_TAU).powi(3);
+        (-KICK_DECAY * e).exp() * (KICK_FREQ * e).sin() * (self.amp * KICK_GAIN) * tail
     }
 }
 
@@ -439,7 +454,7 @@ fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, kick: f32, beat: 
     // kicks only, so the mesh owns the snares.
     // FOCUS MODE: kick-only calibration. Snare syncs on bg temporarily OFF
     // (incl. the intro pumps) so we can dial the kick channel in cleanly.
-    let bg_punch = if st >= 1.5 { kick * 1.35 } else { 0.0 };
+    let bg_punch = if st >= 1.5 { kick } else { 0.0 }; // kick impulse already carries KICK_GAIN
     let _ = pumped;
     for y in 0..H {
         for x in 0..W {
