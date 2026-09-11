@@ -22,9 +22,11 @@ enum Scene {
 #[derive(Clone, Copy, PartialEq)]
 enum SyncCh { Snare, Kick }
 
-// Scene 1 punch source (default). Override for A/B renders with the env var
+// Scene 1 punch source. SNARE is the default: the kick impulse is too short
+// and staccato for the rotozoom (auditioned 2026-09-11 -- "kick looks ass in
+// there"). Kick stays wired as an option purely for A/B tests via the env var
 // PLASMA_ROTOZOOM_SYNC=snare|kick -- see rotozoom_channel().
-const ROTOZOOM_SYNC: SyncCh = SyncCh::Kick;
+const ROTOZOOM_SYNC: SyncCh = SyncCh::Snare;
 
 fn rotozoom_channel() -> SyncCh {
     match std::env::var("PLASMA_ROTOZOOM_SYNC").ok().as_deref() {
