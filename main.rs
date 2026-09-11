@@ -589,12 +589,18 @@ const CYBERPUZZLE_ROWS: usize = 6;
 // fly; the actual per-piece amount is hashed between MIN and this.
 const CYBERPUZZLE_MAX_TURNS: f32 = 2.0;
 const CYBERPUZZLE_MIN_TURNS: f32 = 0.4;
-// Where pieces launch from: just outside the camera at the bottom-right corner
-// (screen px offsets beyond W/H), plus hashed jitter so they don't stack. This
-// is the shared fly-in origin; each piece interpolates from here to its cell.
-const CYBERPUZZLE_ORIGIN_X: f32 = (W as f32) + 220.0;
-const CYBERPUZZLE_ORIGIN_Y: f32 = (H as f32) + 160.0;
+// Where pieces launch from: just outside the camera at the LOWER-LEFT corner
+// (screen px, negative = off-screen left, >H = off-screen bottom), plus hashed
+// jitter so they don't stack. The stream flows from here toward the upper right.
+const CYBERPUZZLE_ORIGIN_X: f32 = -260.0;
+const CYBERPUZZLE_ORIGIN_Y: f32 = (H as f32) + 200.0;
 const CYBERPUZZLE_ORIGIN_JITTER: f32 = 240.0;
+// Per-piece flight duration and the window over which launch times are spread.
+// A piece launches at L_i (staggered across [0, STAGGER_WINDOW]) and lands at
+// L_i + FLY_DUR, so with FLY_DUR+WINDOW <= scene length every piece is down in
+// time. This creates the STREAM: pieces leave the corner one after another.
+const CYBERPUZZLE_FLY_DUR: f32 = 1.7;
+const CYBERPUZZLE_STAGGER_WINDOW: f32 = 2.0;
 
 fn cyberpuzzle_grid() -> (usize, usize) {
     let n = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
@@ -611,26 +617,33 @@ fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u
     let (cols, rows) = cyberpuzzle_grid();
     let (qw, qh) = fit_letterbox(tex.w as f32, tex.h as f32);
     let center = V3::new(0.0, 0.0, CAM_D);
-    const FLY_SECS: f32 = 3.0;
-    let mut s = if st >= FLY_SECS { 0.0 } else { smooth(1.0 - st / FLY_SECS) };
-    // flight progress (linear): 1 at start -> 0 assembled; drives the tumble.
-    let mut prog = (1.0 - (st / FLY_SECS)).clamp(0.0, 1.0);
-    // verification knob: force the assembly scaler (e.g. CYBERPUZZLE_FORCE_S=0).
-    // Also pins flight progress so a forced "assembled" state is the REAL one.
-    if let Ok(v) = std::env::var("CYBERPUZZLE_FORCE_S") {
-        if let Ok(f) = v.parse() { s = f; prog = if f == 0.0 { 0.0 } else { 1.0 }; }
-    }
+    let fly_dur = CYBERPUZZLE_FLY_DUR;
+    let stagger = CYBERPUZZLE_STAGGER_WINDOW;
+    const FORCE: Option<f32> = None; // (kept for clarity; env override below)
+    let _ = FORCE;
+    let force_s: Option<f32> = std::env::var("CYBERPUZZLE_FORCE_S").ok().and_then(|v| v.parse().ok());
     let tint_on = std::env::var_os("CYBERPUZZLE_TINT").is_some();
     // CYBERPUZZLE_SPIN = radians/sec of global yaw applied once assembled
     // (demo only). Default 0 keeps the assembled faces uniformly lam=1.0.
     let spin_rate: f32 = std::env::var("CYBERPUZZLE_SPIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
-    let spin = spin_rate * (st - FLY_SECS).max(0.0);
+    let spin = spin_rate * (st - (stagger + fly_dur)).max(0.0);
     let lx = |i: usize| -qw * 0.5 + qw * (i as f32) / (cols as f32);
     let ly = |j: usize|  qh * 0.5 - qh * (j as f32) / (rows as f32);
     for j in 0..rows {
         for i in 0..cols {
             let (x0, x1) = (lx(i), lx(i + 1));
             let (y0, y1) = (ly(j), ly(j + 1));
+            // per-piece launch time: stream order runs from the lower-left cell
+            // (first to launch) to the upper-right cell (last to launch), so the
+            // pieces cascade from the corner toward the upper right.
+            let kx = if cols > 1 { i as f32 / (cols - 1) as f32 } else { 0.0 };
+            let ky = if rows > 1 { (rows - 1 - j) as f32 / (rows - 1) as f32 } else { 0.0 };
+            let key = (kx + ky) * 0.5;                 // 0 lower-left .. 1 upper-right
+            let launch = key * stagger;
+            // linear flight progress: 1 before launch -> 0 when landed
+            let mut prog = 1.0 - ((st - launch) / fly_dur).clamp(0.0, 1.0);
+            let mut s = smooth(prog);
+            if let Some(f) = force_s { s = f; prog = if f == 0.0 { 0.0 } else { 1.0 }; }
             let base = [
                 V3::new(x0, y0, 0.0), // TL
                 V3::new(x1, y0, 0.0), // TR
