@@ -683,7 +683,7 @@ const HIHAT_DT: f32 = 0.2903;
 // plane). The SAME offset is applied to every piece, so shared vertices stay
 // welded and the whole mosaic swings as one rigid body -- no seams can open.
 // The swing runs at ALL times, including while pieces are still in the air.
-const CYBERPUZZLE_DANCE_FRAC: f32 = 0.125; // 1/8 of the square piece
+const CYBERPUZZLE_DANCE_FRAC: f32 = 0.08333; // 1/12 of the square piece
 const CYBERPUZZLE_DANCE_AMP: f32 = -1.0; // absolute px override; <0 => use FRAC*cell
 
 fn cyberpuzzle_grid() -> (usize, usize) {
