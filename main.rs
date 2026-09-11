@@ -546,6 +546,10 @@ fn draw_textured_quad_tint(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut 
     let n = c[1].sub(c[0]).cross(c[3].sub(c[0])).norm();
     // assembled quad -> |n.LIGHT| == 1 -> lam == 1.0 exactly
     let lam = (0.25 + 0.75 * n.dot(LIGHT).abs()) * tint;
+    if std::env::var_os("CYBERPUZZLE_LIGHTDBG").is_some() {
+        let raw = 0.25 + 0.75 * n.dot(LIGHT).abs();
+        eprintln!("LIGHTDBG n=({:.3},{:.3},{:.3}) n.L={:.4} lam_raw={:.6}", n.x, n.y, n.z, n.dot(LIGHT), raw);
+    }
     let mut sx = [0.0f32; 4];
     let mut sy = [0.0f32; 4];
     let mut invz = [0.0f32; 4];
@@ -582,11 +586,15 @@ fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u
     let (cols, rows) = cyberpuzzle_grid();
     let (qw, qh) = fit_letterbox(tex.w as f32, tex.h as f32);
     let center = V3::new(0.0, 0.0, CAM_D);
-    const FLY_SECS: f32 = 4.0;
+    const FLY_SECS: f32 = 3.0;
     let mut s = if st >= FLY_SECS { 0.0 } else { smooth(1.0 - st / FLY_SECS) };
     // verification knob: force the assembly scaler (e.g. CYBERPUZZLE_FORCE_S=0)
     if let Ok(v) = std::env::var("CYBERPUZZLE_FORCE_S") { if let Ok(f) = v.parse() { s = f; } }
     let tint_on = std::env::var_os("CYBERPUZZLE_TINT").is_some();
+    // CYBERPUZZLE_SPIN = radians/sec of global yaw applied once assembled
+    // (demo only). Default 0 keeps the assembled faces uniformly lam=1.0.
+    let spin_rate: f32 = std::env::var("CYBERPUZZLE_SPIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let spin = spin_rate * (st - FLY_SECS).max(0.0);
     let lx = |i: usize| -qw * 0.5 + qw * (i as f32) / (cols as f32);
     let ly = |j: usize|  qh * 0.5 - qh * (j as f32) / (rows as f32);
     for j in 0..rows {
@@ -612,11 +620,13 @@ fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u
             for k in 0..4 {
                 let rel = base[k].sub(cc);                       // about cell center
                 let r = rot3(rel, ry * s, rp * s, rr * s);       // offset rotation
-                corners[k] = V3::new(
-                    center.x + cc.x + r.x + dx * s,
-                    center.y + cc.y + r.y + dy * s,
-                    center.z + cc.z + r.z + dz * s,
-                );
+                let pos = V3::new(cc.x + r.x + dx * s,
+                                  cc.y + r.y + dy * s,
+                                  cc.z + r.z + dz * s);
+                // optional global spin of the whole assembly (demo only; kills
+                // the uniform lam=1.0, which is the point -- it shows shading).
+                let pos = if spin != 0.0 { rot3(pos, spin, 0.0, 0.0) } else { pos };
+                corners[k] = V3::new(center.x + pos.x, center.y + pos.y, center.z + pos.z);
             }
             // uv: one shared texture across the whole grid -> tiles are literal
             // fragments of the image (uv slice per cell).
