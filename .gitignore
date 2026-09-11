@@ -1,6 +1,13 @@
+# build artifacts / renders (never committed)
 /target
 *.mp4
 *.gif
 frames*/
 app
 sync_verification.png
+
+# assets -- kept out of the repo and off GitHub, distributed separately
+*.png
+*.ogg
+beats.txt
+kicks.txt
