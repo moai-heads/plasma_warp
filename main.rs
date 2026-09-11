@@ -671,6 +671,20 @@ const CYBERPUZZLE_FLIP_DUR: f32 = 1.2;
 // RULE: offset radius < 0.5 * cell. We use AMP * cell (AMP clamped < 0.49).
 const CYBERPUZZLE_SHAPE_AMP: f32 = 0.35; // fraction of min cell size; 0 = off
 
+// HIHAT-DERIVED SWING. Measured from the hand-labelled sync data: snare-to-snare
+// spacing fits 1.1611 s (== 2 beats @ 103.35 BPM), and snare-to-snare spans
+// exactly 4 hihats, so the hihat interval is 1.1611/4. (Cross-checked against a
+// 6-14 kHz onset detection on the audio: median spacing 0.285 s.) Hard-coded for
+// now, per wabunja.
+const HIHAT_DT: f32 = 0.2903;
+// DANCE: every piece sways on screen-X with sin(), one full -1..1 excursion per
+// hihat interval => period = 2*HIHAT_DT. Amplitude in screen px (1 world unit ==
+// 1 px at the quad plane). The SAME offset is applied to every piece, so shared
+// vertices stay welded and the whole mosaic swings as one rigid body -- no seams
+// can open. Gated to be zero during the fly-in (so the landing stays exact) and
+// phase-anchored at assembly_end (sin 0 there) so there is no jump on entry.
+const CYBERPUZZLE_DANCE_AMP: f32 = 16.0;
+
 fn cyberpuzzle_grid() -> (usize, usize) {
     let n = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     (n("CYBERPUZZLE_COLS", CYBERPUZZLE_COLS).max(1),
@@ -734,6 +748,13 @@ fn frame_cyberpuzzle(tex: &Tex, back_tex: &Tex, st: f32, _gt: f32) -> ImageBuffe
     let morph = if st <= assembly_end { 0.0 }
                 else { smooth(((st - assembly_end) / (flip_start - assembly_end)).clamp(0.0, 1.0)) };
     let amp = amp_base * (1.0 - morph);
+    // --- hihat swing: rigid screen-X sway of the assembled mosaic. Zero until
+    // the picture has landed; then a sin() whose half-period is one hihat.
+    let dance_amp: f32 = std::env::var("CYBERPUZZLE_DANCE_AMP").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(CYBERPUZZLE_DANCE_AMP);
+    let dance_w = smooth(((st - assembly_end) / 0.30).clamp(0.0, 1.0));
+    let dance_x = dance_amp * dance_w
+        * (std::f32::consts::PI * (st - assembly_end) / HIHAT_DT).sin();
     // ONE shared mesh; pieces are index windows into it, so shared boundary
     // vertices (and their uvs) are literally the same points -> watertight.
     let (vpos, vuv) = cyberpuzzle_vertices(cols, rows, qw, qh, amp);
@@ -812,7 +833,10 @@ fn frame_cyberpuzzle(tex: &Tex, back_tex: &Tex, st: f32, _gt: f32) -> ImageBuffe
                 let pos = V3::new(cc.x + r.x + dx * s,
                                   cc.y + r.y + dy * s,
                                   cc.z + r.z + dz * s);
-                let pos = if spin != 0.0 { rot3(pos, spin, 0.0, 0.0) } else { pos };
+                let mut pos = if spin != 0.0 { rot3(pos, spin, 0.0, 0.0) } else { pos };
+                // hihat swing: same offset for every piece -> shared vertices move
+                // together, so the mosaic sways as one body with no cracks.
+                pos.x += dance_x;
                 corners[k] = V3::new(center.x + pos.x, center.y + pos.y, center.z + pos.z);
             }
             // two-sided only once the flip begins; None keeps front tex on both faces.
