@@ -683,7 +683,7 @@ const HIHAT_DT: f32 = 0.2903;
 // plane). The SAME offset is applied to every piece, so shared vertices stay
 // welded and the whole mosaic swings as one rigid body -- no seams can open.
 // The swing is OFF during the fly-in and BEGINS on the first KICK sync at/after
-// assembly_end, phase-anchored on that kick.
+// assembly_end, phase-anchored on that snare.
 const CYBERPUZZLE_DANCE_FRAC: f32 = 0.0625; // 1/16 of the square piece
 const CYBERPUZZLE_DANCE_AMP: f32 = -1.0; // absolute px override; <0 => use FRAC*cell
 
@@ -760,11 +760,11 @@ fn frame_cyberpuzzle(tex: &Tex, back_tex: &Tex, st: f32, _gt: f32, beat: &BeatSy
     let dance_amp: f32 = std::env::var("CYBERPUZZLE_DANCE_AMP").ok()
         .and_then(|v| v.parse().ok()).filter(|&v| v >= 0.0)
         .unwrap_or(CYBERPUZZLE_DANCE_FRAC * cell);
-    // scene-local kick schedule (same mapping the other scenes use), then the
-    // first kick at/after the moment the picture is whole.
-    let mut lk: Vec<f32> = beat.kicks.iter().map(|&k| (k - 32.0).rem_euclid(beat.span)).collect();
-    lk.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let dance_start = lk.iter().cloned().find(|&k| k >= assembly_end).unwrap_or(assembly_end);
+    // scene-local SNARE schedule (same mapping the other scenes use), then the
+    // first snare at/after the moment the picture is whole.
+    let mut ls: Vec<f32> = beat.beats.iter().map(|&b| (b - 32.0).rem_euclid(beat.span)).collect();
+    ls.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let dance_start = ls.iter().cloned().find(|&b| b >= assembly_end).unwrap_or(assembly_end);
     let dance_x = if st < dance_start { 0.0 }
         else { dance_amp * (std::f32::consts::PI * (st - dance_start) / HIHAT_DT).sin() };
     // ONE shared mesh; pieces are index windows into it, so shared boundary
