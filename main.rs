@@ -562,19 +562,47 @@ fn fit_letterbox(tw: f32, th: f32) -> (f32, f32) {
 
 // Draw one textured quad (two triangles). Corners in world space, order
 // [TL, TR, BR, BL]; uvs likewise. Flat lambert per face, two-sided (see LIGHT).
+//
+// TWO-SIDED TEXTURING: `back == None` -> BOTH faces sample `front` (the old
+// behaviour, used during the fly-in). `back == Some(t)` -> the face pointing
+// AT the camera samples `front`, the face pointing AWAY samples `t` with u
+// mirrored (u -> 1-u) so the reveal reads un-mirrored. The side is chosen PER
+// QUAD from its CURRENT facing, every frame -- there is no temporal "swap"; a
+// piece flipping 180 degrees crosses over by itself at the edge-on instant.
 fn draw_textured_quad(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
-                      tex: &Tex, c: [V3; 4], uvs: [(f32, f32); 4]) {
-    draw_textured_quad_tint(img, depth, tex, c, uvs, 1.0)
+                      front: &Tex, back: Option<&Tex>, c: [V3; 4], uvs: [(f32, f32); 4]) {
+    draw_textured_quad_tint(img, depth, front, back, c, uvs, 1.0)
 }
 
 fn draw_textured_quad_tint(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
-                           tex: &Tex, c: [V3; 4], uvs: [(f32, f32); 4], tint: f32) {
+                           front: &Tex, back: Option<&Tex>, c: [V3; 4], uvs: [(f32, f32); 4],
+                           tint: f32) {
     let n = c[1].sub(c[0]).cross(c[3].sub(c[0])).norm();
-    // assembled quad -> |n.LIGHT| == 1 -> lam == 1.0 exactly
+    // assembled quad -> |n.LIGHT| == 1 -> lam == 1.0 exactly (two-sided: abs)
     let lam = (0.25 + 0.75 * n.dot(LIGHT).abs()) * tint;
+    // camera is the world origin, so centroid -> camera = -centroid. `n` is the
+    // outward front normal; n.cen < 0 means the front is turned toward the camera.
+    let cen = V3::new(
+        (c[0].x + c[1].x + c[2].x + c[3].x) * 0.25,
+        (c[0].y + c[1].y + c[2].y + c[3].y) * 0.25,
+        (c[0].z + c[1].z + c[2].z + c[3].z) * 0.25);
+    let front_facing = n.dot(cen) < 0.0;
+    let (pick, flip_u) = match back {
+        Some(b) if !front_facing => (b, true),
+        _ => (front, false),
+    };
+    // Un-mirror the revealed back: a 180-degree Y flip reverses the left/right
+    // corner order, so swap the u of each tile's left/right corner pair
+    // (TL<->TR, BL<->BR). This mirrors WITHIN the tile -- a global (1-u) would
+    // sample the wrong slice on off-centre tiles.
+    let uvs: [(f32, f32); 4] = if flip_u {
+        [(uvs[1].0, uvs[0].1), (uvs[0].0, uvs[1].1),
+         (uvs[3].0, uvs[2].1), (uvs[2].0, uvs[3].1)]
+    } else { uvs };
     if std::env::var_os("CYBERPUZZLE_LIGHTDBG").is_some() {
         let raw = 0.25 + 0.75 * n.dot(LIGHT).abs();
-        eprintln!("LIGHTDBG n=({:.3},{:.3},{:.3}) n.L={:.4} lam_raw={:.6}", n.x, n.y, n.z, n.dot(LIGHT), raw);
+        eprintln!("LIGHTDBG n=({:.3},{:.3},{:.3}) n.L={:.4} lam_raw={:.6} front={} flip_u={}",
+                  n.x, n.y, n.z, n.dot(LIGHT), raw, front_facing, flip_u);
     }
     let mut sx = [0.0f32; 4];
     let mut sy = [0.0f32; 4];
@@ -588,7 +616,7 @@ fn draw_textured_quad_tint(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut 
                        [sx[a], sx[b], sx[cc]], [sy[a], sy[b], sy[cc]],
                        [uvs[a].0, uvs[b].0, uvs[cc].0],
                        [uvs[a].1, uvs[b].1, uvs[cc].1],
-                       [invz[a], invz[b], invz[cc]], tex, lam);
+                       [invz[a], invz[b], invz[cc]], pick, lam);
     }
 }
 
@@ -613,6 +641,11 @@ const CYBERPUZZLE_FLY_DUR: f32 = 1.7;
 // the origin and coast into place. Slope ratio (start:end) is e^k.
 const CYBERPUZZLE_EASE_K: f32 = 3.5;
 const CYBERPUZZLE_STAGGER_WINDOW: f32 = 2.0;
+// Post-assembly choreography: hold the finished picture for HOLD seconds,
+// then flip every piece 180 degrees about its own Y axis to reveal the BACK
+// texture. During the fly-in BOTH faces show the front texture (see draw_textured_quad).
+const CYBERPUZZLE_HOLD: f32 = 3.0;
+const CYBERPUZZLE_FLIP_DUR: f32 = 1.2;
 // SHARED-VERTEX SHAPE DISPLACEMENT (wabunja's scheme):
 // The grid is ONE watertight mesh of shared vertices -- vertex (gi,gj) is owned
 // jointly by every piece touching it, so a boundary vertex moved for one piece
@@ -670,7 +703,7 @@ fn cyberpuzzle_vertices(cols: usize, rows: usize, qw: f32, qh: f32, amp: f32)
     (pos, uv)
 }
 
-fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+fn frame_cyberpuzzle(tex: &Tex, back_tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     let mut img = ImageBuffer::new(W as u32, H as u32);
     let mut depth = vec![f32::INFINITY; W * H];
     let (cols, rows) = cyberpuzzle_grid();
@@ -687,6 +720,16 @@ fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u
     let tint_on = std::env::var_os("CYBERPUZZLE_TINT").is_some();
     let spin_rate: f32 = std::env::var("CYBERPUZZLE_SPIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
     let spin = spin_rate * (st - (stagger + fly_dur)).max(0.0);
+    // --- post-assembly choreography: hold, then a 180-degree Y flip. The flip
+    // pivots on the SAME per-piece centroid as the tumble and lands coplanar
+    // again (a half-turn about Y keeps z and mirrors x). `reveal` enables
+    // two-sided texturing the instant the flip starts, so the back texture
+    // never peeks during the fly-in.
+    let assembly_end = stagger + fly_dur;
+    let flip_start = assembly_end + CYBERPUZZLE_HOLD;
+    let flip_t = ((st - flip_start) / CYBERPUZZLE_FLIP_DUR).clamp(0.0, 1.0);
+    let yaw = std::f32::consts::PI * smooth(flip_t);
+    let reveal = st >= flip_start;
     for j in 0..rows {
         for i in 0..cols {
             // the piece's four SHARED corners, in [TL, TR, BR, BL] order
@@ -736,18 +779,22 @@ fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u
             for k in 0..4 {
                 let rel = base[k].sub(cc);                       // about piece centroid
                 let r = rot_axis(rel, axis, ang);                // tumble
+                // 180-degree Y flip about the piece centroid (identity until flip_start).
+                let r = if yaw != 0.0 { rot3(r, yaw, 0.0, 0.0) } else { r };
                 let pos = V3::new(cc.x + r.x + dx * s,
                                   cc.y + r.y + dy * s,
                                   cc.z + r.z + dz * s);
                 let pos = if spin != 0.0 { rot3(pos, spin, 0.0, 0.0) } else { pos };
                 corners[k] = V3::new(center.x + pos.x, center.y + pos.y, center.z + pos.z);
             }
+            // two-sided only once the flip begins; None keeps front tex on both faces.
+            let back = if reveal { Some(back_tex) } else { None };
             // DEBUG: tint alternating cells so the grid is visible. TINT=1.
             if tint_on {
                 let t = if (i + j) % 2 == 0 { 1.0 } else { 0.5 };
-                draw_textured_quad_tint(&mut img, &mut depth, tex, corners, uvs, t);
+                draw_textured_quad_tint(&mut img, &mut depth, tex, back, corners, uvs, t);
             } else {
-                draw_textured_quad(&mut img, &mut depth, tex, corners, uvs);
+                draw_textured_quad(&mut img, &mut depth, tex, back, corners, uvs);
             }
         }
     }
@@ -895,7 +942,7 @@ fn frame_for(scene: Scene, texs: &[&Tex; 5], blurs: &[&Tex; 5],
             frame_rotozoom(texs[t0], blurs[t0], texs[t1], blurs[t1], gt, mix, p)
         }
         Scene::TriangleDance => frame_tri(texs[2], blurs[2], st, gt, punch, beat.punch_kick(gt), beat), // blue bg; mesh=snare, bg=kick
-        Scene::CyberPuzzle => frame_cyberpuzzle(texs[3], st, gt), // textured 3D quad pipeline (tex_scene3)
+        Scene::CyberPuzzle => frame_cyberpuzzle(texs[3], texs[4], st, gt), // front=tex_scene3, back=tex_scene4
     }
 }
 
@@ -999,7 +1046,7 @@ fn main() {
     let timeline: Vec<(Scene, f32, f32)> = vec![
         (Scene::Rotozoom, 0.0, 16.0),
         (Scene::TriangleDance, 16.0, 16.0),
-        (Scene::CyberPuzzle, 32.0, 4.0), // STAGE 1: renderer test, 4s
+        (Scene::CyberPuzzle, 32.0, 8.0), // fly-in + hold 3s + 180 flip reveal
     ];
 
     let mode = args.get(1).map(|s| s.as_str()).unwrap_or("demo");
