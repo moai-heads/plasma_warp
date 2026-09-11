@@ -682,7 +682,8 @@ const HIHAT_DT: f32 = 0.2903;
 // puzzle piece (cell) size, in world units (1 world unit == 1 px at the quad
 // plane). The SAME offset is applied to every piece, so shared vertices stay
 // welded and the whole mosaic swings as one rigid body -- no seams can open.
-// The swing runs at ALL times, including while pieces are still in the air.
+// The swing is OFF during the fly-in and BEGINS on the first KICK sync at/after
+// assembly_end, phase-anchored on that kick.
 const CYBERPUZZLE_DANCE_FRAC: f32 = 0.0625; // 1/16 of the square piece
 const CYBERPUZZLE_DANCE_AMP: f32 = -1.0; // absolute px override; <0 => use FRAC*cell
 
@@ -729,7 +730,7 @@ fn cyberpuzzle_vertices(cols: usize, rows: usize, qw: f32, qh: f32, amp: f32)
     (pos, uv)
 }
 
-fn frame_cyberpuzzle(tex: &Tex, back_tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+fn frame_cyberpuzzle(tex: &Tex, back_tex: &Tex, st: f32, _gt: f32, beat: &BeatSync) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     let mut img = ImageBuffer::new(W as u32, H as u32);
     let mut depth = vec![f32::INFINITY; W * H];
     let (cols, rows) = cyberpuzzle_grid();
@@ -750,14 +751,22 @@ fn frame_cyberpuzzle(tex: &Tex, back_tex: &Tex, st: f32, _gt: f32) -> ImageBuffe
                 else { smooth(((st - assembly_end) / (flip_start - assembly_end)).clamp(0.0, 1.0)) };
     let amp = amp_base * (1.0 - morph);
     // --- hihat swing: rigid screen-X sway of the WHOLE mosaic (same offset for
-    // every piece -> shared vertices stay welded, no seams). Runs at all times,
-    // fly-in included, so pieces swing even while airborne. Amplitude is a
-    // fraction (1/5) of the square piece (cell) unless an absolute override is set.
+    // every piece -> shared vertices stay welded, no seams). OFF during the
+    // fly-in; it BEGINS exactly on the first KICK sync at/after assembly_end and
+    // runs from there. Phase is anchored on that kick (sin 0 there) so the sway
+    // starts from a standstill with no jump. Amplitude is a fraction of the
+    // square piece (cell) unless an absolute override is set.
     let cell = (qw / cols as f32).min(qh / rows as f32);
     let dance_amp: f32 = std::env::var("CYBERPUZZLE_DANCE_AMP").ok()
         .and_then(|v| v.parse().ok()).filter(|&v| v >= 0.0)
         .unwrap_or(CYBERPUZZLE_DANCE_FRAC * cell);
-    let dance_x = dance_amp * (std::f32::consts::PI * st / HIHAT_DT).sin();
+    // scene-local kick schedule (same mapping the other scenes use), then the
+    // first kick at/after the moment the picture is whole.
+    let mut lk: Vec<f32> = beat.kicks.iter().map(|&k| (k - 32.0).rem_euclid(beat.span)).collect();
+    lk.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let dance_start = lk.iter().cloned().find(|&k| k >= assembly_end).unwrap_or(assembly_end);
+    let dance_x = if st < dance_start { 0.0 }
+        else { dance_amp * (std::f32::consts::PI * (st - dance_start) / HIHAT_DT).sin() };
     // ONE shared mesh; pieces are index windows into it, so shared boundary
     // vertices (and their uvs) are literally the same points -> watertight.
     let (vpos, vuv) = cyberpuzzle_vertices(cols, rows, qw, qh, amp);
@@ -997,7 +1006,7 @@ fn frame_for(scene: Scene, texs: &[&Tex; 5], blurs: &[&Tex; 5],
             frame_rotozoom(texs[t0], blurs[t0], texs[t1], blurs[t1], gt, mix, p)
         }
         Scene::TriangleDance => frame_tri(texs[2], blurs[2], st, gt, punch, beat.punch_kick(gt), beat), // blue bg; mesh=snare, bg=kick
-        Scene::CyberPuzzle => frame_cyberpuzzle(texs[3], texs[4], st, gt), // front=tex_scene3, back=tex_scene4
+        Scene::CyberPuzzle => frame_cyberpuzzle(texs[3], texs[4], st, gt, beat), // front=tex_scene3, back=tex_scene4
     }
 }
 
