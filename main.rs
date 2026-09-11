@@ -646,16 +646,18 @@ const CYBERPUZZLE_ORIGIN_JITTER: f32 = 240.0;
 // (they recede into place). Flip the sign to switch which side they fly from.
 const CYBERPUZZLE_ORIGIN_Z: f32 = -450.0;       // NEGATIVE => launch IN FRONT of the plane
 const CYBERPUZZLE_ORIGIN_Z_JITTER: f32 = 300.0; // hashed extra depth per piece
-// Per-piece flight duration and the window over which launch times are spread.
+// Per-piece flight duration. The launch window (stagger) is NOT a const: it is
+// DERIVED so that the last piece lands exactly on a snare (see the timing block
+// in frame_cyberpuzzle). Everything downstream is snare-synced to the music.
 const CYBERPUZZLE_FLY_DUR: f32 = 1.7;
 // Front-loading of the flight curve: 0 = linear, larger = pieces fly faster off
 // the origin and coast into place. Slope ratio (start:end) is e^k.
 const CYBERPUZZLE_EASE_K: f32 = 3.5;
-const CYBERPUZZLE_STAGGER_WINDOW: f32 = 2.0;
-// Post-assembly choreography: hold the finished picture for HOLD seconds,
-// then flip every piece 180 degrees about its own Y axis to reveal the BACK
-// texture. During the fly-in BOTH faces show the front texture (see draw_textured_quad).
-const CYBERPUZZLE_HOLD: f32 = 1.5;
+// Choreography anchor: the assembly ENDS on the first SNARE at/after this
+// nominal scene time. From there, the next snare starts the x-jiggle, and the
+// SECOND snare after that (one snare is spent jiggling) triggers the 180-deg
+// Y flip that reveals the back texture. See frame_cyberpuzzle.
+const CYBERPUZZLE_ASSEMBLY_TARGET: f32 = 3.0;
 const CYBERPUZZLE_FLIP_DUR: f32 = 1.2;
 // SHARED-VERTEX SHAPE DISPLACEMENT (wabunja's scheme):
 // The grid is ONE watertight mesh of shared vertices -- vertex (gi,gj) is owned
@@ -737,10 +739,30 @@ fn frame_cyberpuzzle(tex: &Tex, back_tex: &Tex, st: f32, _gt: f32, beat: &BeatSy
     let (qw, qh) = fit_letterbox(tex.w as f32, tex.h as f32);
     let amp_base = cyberpuzzle_shape_amp();
     let fly_dur = CYBERPUZZLE_FLY_DUR;
-    let stagger = CYBERPUZZLE_STAGGER_WINDOW;
-    // post-assembly timing: fly-in end -> hold -> 180-deg Y flip
-    let assembly_end = stagger + fly_dur;
-    let flip_start = assembly_end + CYBERPUZZLE_HOLD;
+    // ---- SNARE-SYNCED CHOREOGRAPHY ----------------------------------------
+    // Scene-local snare schedule (same mapping the other scenes use).
+    let mut ls: Vec<f32> = beat.beats.iter().map(|&b| (b - 32.0).rem_euclid(beat.span)).collect();
+    ls.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let snare_at_or_after = |t: f32| ls.iter().cloned().find(|&b| b >= t - 1e-4);
+    let snare_after = |t: f32| ls.iter().cloned().find(|&b| b > t + 1e-4);
+    // (1) The picture unifies EXACTLY on a snare: pick the first snare at/after
+    // the nominal target, then draw the launch window so the last piece lands
+    // precisely there (last launch == stagger, +fly_dur == assembly_end).
+    let assembly_end = snare_at_or_after(CYBERPUZZLE_ASSEMBLY_TARGET)
+        .unwrap_or(CYBERPUZZLE_ASSEMBLY_TARGET);
+    let stagger = (assembly_end - fly_dur).max(0.2);
+    // (2) The NEXT snare after unify begins the x-axis jiggle.
+    let jiggle_start = snare_after(assembly_end).unwrap_or(assembly_end + 0.5);
+    // (3) Flip on the SECOND snare after the jiggle starts -- one snare is spent
+    // jiggling in between, then the next one triggers the 180-deg reveal.
+    let after_jiggle: Vec<f32> = ls.iter().cloned().filter(|&b| b > jiggle_start + 1e-4).collect();
+    let flip_start = after_jiggle.get(1).copied()
+        .or_else(|| after_jiggle.first().copied())
+        .unwrap_or(jiggle_start + 1.0);
+    if std::env::var_os("CYBERPUZZLE_TIMING").is_some() {
+        eprintln!("[cyber] assembly_end={:.4} jiggle_start={:.4} flip_start={:.4} flip_end={:.4} stagger={:.4}",
+                  assembly_end, jiggle_start, flip_start, flip_start + CYBERPUZZLE_FLIP_DUR, stagger);
+    }
     // Morph the irregular pieces back to perfect squares across the hold. This is
     // INVISIBLE: the assembled planar image is invariant to in-plane interior
     // -vertex displacement, and by assembly_end every piece has landed (s==0).
@@ -760,13 +782,8 @@ fn frame_cyberpuzzle(tex: &Tex, back_tex: &Tex, st: f32, _gt: f32, beat: &BeatSy
     let dance_amp: f32 = std::env::var("CYBERPUZZLE_DANCE_AMP").ok()
         .and_then(|v| v.parse().ok()).filter(|&v| v >= 0.0)
         .unwrap_or(CYBERPUZZLE_DANCE_FRAC * cell);
-    // scene-local SNARE schedule (same mapping the other scenes use), then the
-    // first snare at/after the moment the picture is whole.
-    let mut ls: Vec<f32> = beat.beats.iter().map(|&b| (b - 32.0).rem_euclid(beat.span)).collect();
-    ls.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let dance_start = ls.iter().cloned().find(|&b| b >= assembly_end).unwrap_or(assembly_end);
-    let dance_x = if st < dance_start { 0.0 }
-        else { dance_amp * (std::f32::consts::PI * (st - dance_start) / HIHAT_DT).sin() };
+    let dance_x = if st < jiggle_start { 0.0 }
+        else { dance_amp * (std::f32::consts::PI * (st - jiggle_start) / HIHAT_DT).sin() };
     // ONE shared mesh; pieces are index windows into it, so shared boundary
     // vertices (and their uvs) are literally the same points -> watertight.
     let (vpos, vuv) = cyberpuzzle_vertices(cols, rows, qw, qh, amp);
@@ -1110,7 +1127,7 @@ fn main() {
     let timeline: Vec<(Scene, f32, f32)> = vec![
         (Scene::Rotozoom, 0.0, 16.0),
         (Scene::TriangleDance, 16.0, 16.0),
-        (Scene::CyberPuzzle, 32.0, 6.5), // fly-in + hold 1.5s + 180 flip reveal
+        (Scene::CyberPuzzle, 32.0, 8.2), // unify-on-snare + jiggle + snare-triggered flip reveal
     ];
 
     let mode = args.get(1).map(|s| s.as_str()).unwrap_or("demo");
