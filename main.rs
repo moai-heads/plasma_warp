@@ -459,6 +459,21 @@ fn rot3(p: V3, yaw: f32, pitch: f32, roll: f32) -> V3 {
     V3::new(x3, y2, z3)
 }
 
+// Rotate point p about unit axis a by angle (Rodrigues). Used for the
+// per-piece tumble: a clean N-full-turn spin that returns to identity.
+#[inline]
+fn rot_axis(p: V3, a: V3, ang: f32) -> V3 {
+    let (c, sn) = (ang.cos(), ang.sin());
+    let term1 = V3::new(p.x * c, p.y * c, p.z * c);
+    let term2 = a.cross(p);
+    let term2 = V3::new(term2.x * sn, term2.y * sn, term2.z * sn);
+    let ad = a.dot(p);
+    let term3 = V3::new(a.x * ad * (1.0 - c), a.y * ad * (1.0 - c), a.z * ad * (1.0 - c));
+    V3::new(term1.x + term2.x + term3.x,
+            term1.y + term2.y + term3.y,
+            term1.z + term2.z + term3.z)
+}
+
 // Stable per-cell pseudo-random in [0,1) from the cell index (no state).
 #[inline]
 fn hash01(i: usize, j: usize, salt: f32) -> f32 {
@@ -570,6 +585,8 @@ fn draw_textured_quad_tint(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut 
 // no single value is hard-coded (default 8x6); see cyberpuzzle_grid().
 const CYBERPUZZLE_COLS: usize = 8;
 const CYBERPUZZLE_ROWS: usize = 6;
+// Full rotations each piece makes about its own (hashed) axis during the fly.
+const CYBERPUZZLE_TURNS: f32 = 3.0;
 
 fn cyberpuzzle_grid() -> (usize, usize) {
     let n = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
@@ -588,8 +605,13 @@ fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u
     let center = V3::new(0.0, 0.0, CAM_D);
     const FLY_SECS: f32 = 3.0;
     let mut s = if st >= FLY_SECS { 0.0 } else { smooth(1.0 - st / FLY_SECS) };
-    // verification knob: force the assembly scaler (e.g. CYBERPUZZLE_FORCE_S=0)
-    if let Ok(v) = std::env::var("CYBERPUZZLE_FORCE_S") { if let Ok(f) = v.parse() { s = f; } }
+    // flight progress (linear): 1 at start -> 0 assembled; drives the tumble.
+    let mut prog = (1.0 - (st / FLY_SECS)).clamp(0.0, 1.0);
+    // verification knob: force the assembly scaler (e.g. CYBERPUZZLE_FORCE_S=0).
+    // Also pins flight progress so a forced "assembled" state is the REAL one.
+    if let Ok(v) = std::env::var("CYBERPUZZLE_FORCE_S") {
+        if let Ok(f) = v.parse() { s = f; prog = if f == 0.0 { 0.0 } else { 1.0 }; }
+    }
     let tint_on = std::env::var_os("CYBERPUZZLE_TINT").is_some();
     // CYBERPUZZLE_SPIN = radians/sec of global yaw applied once assembled
     // (demo only). Default 0 keeps the assembled faces uniformly lam=1.0.
@@ -613,13 +635,19 @@ fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u
             let dx = (hash01(i, j, 0.0) - 0.5) * 900.0;
             let dy = (hash01(i, j, 1.0) - 0.5) * 700.0;
             let dz = (0.35 + 0.65 * hash01(i, j, 2.0)) * 700.0; // start farther (smaller)
-            let ry = (hash01(i, j, 3.0) - 0.5) * 4.0;
-            let rp = (hash01(i, j, 4.0) - 0.5) * 4.0;
-            let rr = (hash01(i, j, 5.0) - 0.5) * 4.0;
+            // per-piece tumble about a hashed axis: TURNS full rotations over
+            // the fly, plus a small tilt so pieces don't all start flat.
+            let ax_raw = V3::new(hash01(i, j, 3.0) - 0.5,
+                                 hash01(i, j, 4.0) - 0.5,
+                                 hash01(i, j, 5.0) - 0.5);
+            let axis = if ax_raw.dot(ax_raw) < 1e-6 { V3::new(1.0, 0.0, 0.0) } else { ax_raw.norm() };
+            let tilt = (hash01(i, j, 6.0) - 0.5) * 2.0;          // radians
+            // prog: 1 at start -> 0 assembled. TURNS*2pi -> identity at both.
+            let ang = (CYBERPUZZLE_TURNS * std::f32::consts::TAU + tilt) * prog;
             let mut corners = [V3::new(0.0, 0.0, 0.0); 4];
             for k in 0..4 {
                 let rel = base[k].sub(cc);                       // about cell center
-                let r = rot3(rel, ry * s, rp * s, rr * s);       // offset rotation
+                let r = rot_axis(rel, axis, ang);                // N-full-turn tumble
                 let pos = V3::new(cc.x + r.x + dx * s,
                                   cc.y + r.y + dy * s,
                                   cc.z + r.z + dz * s);
