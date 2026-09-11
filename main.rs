@@ -519,9 +519,14 @@ fn fit_letterbox(tw: f32, th: f32) -> (f32, f32) {
 // [TL, TR, BR, BL]; uvs likewise. Flat lambert per face, two-sided (see LIGHT).
 fn draw_textured_quad(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
                       tex: &Tex, c: [V3; 4], uvs: [(f32, f32); 4]) {
+    draw_textured_quad_tint(img, depth, tex, c, uvs, 1.0)
+}
+
+fn draw_textured_quad_tint(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
+                           tex: &Tex, c: [V3; 4], uvs: [(f32, f32); 4], tint: f32) {
     let n = c[1].sub(c[0]).cross(c[3].sub(c[0])).norm();
     // assembled quad -> |n.LIGHT| == 1 -> lam == 1.0 exactly
-    let lam = 0.25 + 0.75 * n.dot(LIGHT).abs();
+    let lam = (0.25 + 0.75 * n.dot(LIGHT).abs()) * tint;
     let mut sx = [0.0f32; 4];
     let mut sy = [0.0f32; 4];
     let mut invz = [0.0f32; 4];
@@ -538,10 +543,24 @@ fn draw_textured_quad(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32]
     }
 }
 
+// Grid resolution for the CyberPuzzle quad. Adjustable at runtime via env so
+// no single value is hard-coded (default 8x6); see cyberpuzzle_grid().
+const CYBERPUZZLE_COLS: usize = 8;
+const CYBERPUZZLE_ROWS: usize = 6;
+
+fn cyberpuzzle_grid() -> (usize, usize) {
+    let n = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    (n("CYBERPUZZLE_COLS", CYBERPUZZLE_COLS).max(1),
+     n("CYBERPUZZLE_ROWS", CYBERPUZZLE_ROWS).max(1))
+}
+
 fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     let mut img = ImageBuffer::new(W as u32, H as u32);
     let mut depth = vec![f32::INFINITY; W * H];
-    // STAGE 1 TEST: one textured quad, letterboxed, spinning in place.
+    // STAGE 2 TEST: the SAME single quad, now subdivided into an adjustable
+    // N x M grid of cells. Cells are coplanar and share edges exactly, so the
+    // result must match the un-subdivided render pixel for pixel -- no seams.
+    let (cols, rows) = cyberpuzzle_grid();
     let (qw, qh) = fit_letterbox(tex.w as f32, tex.h as f32);
     let center = V3::new(0.0, 0.0, CAM_D);
     let yaw = st * 1.1;
@@ -556,19 +575,41 @@ fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u
         let (x3, z3) = (x1 * cy_ + z2 * syw, -x1 * syw + z2 * cy_);
         V3::new(x3, y2, z3)
     };
-    let local = [
-        V3::new(-qw * 0.5,  qh * 0.5, 0.0),
-        V3::new( qw * 0.5,  qh * 0.5, 0.0),
-        V3::new( qw * 0.5, -qh * 0.5, 0.0),
-        V3::new(-qw * 0.5, -qh * 0.5, 0.0),
-    ];
-    let mut corners = [V3::new(0.0, 0.0, 0.0); 4];
-    for i in 0..4 {
-        let r = rot(local[i]);
-        corners[i] = V3::new(center.x + r.x, center.y + r.y, center.z + r.z);
+    let tint_on = std::env::var_os("CYBERPUZZLE_TINT").is_some();
+    let lx = |i: usize| -qw * 0.5 + qw * (i as f32) / (cols as f32);
+    let ly = |j: usize|  qh * 0.5 - qh * (j as f32) / (rows as f32);
+    for j in 0..rows {
+        for i in 0..cols {
+            let (x0, x1) = (lx(i), lx(i + 1));
+            let (y0, y1) = (ly(j), ly(j + 1));
+            let local = [
+                V3::new(x0, y0, 0.0), // TL
+                V3::new(x1, y0, 0.0), // TR
+                V3::new(x1, y1, 0.0), // BR
+                V3::new(x0, y1, 0.0), // BL
+            ];
+            let mut corners = [V3::new(0.0, 0.0, 0.0); 4];
+            for k in 0..4 {
+                let r = rot(local[k]);
+                corners[k] = V3::new(center.x + r.x, center.y + r.y, center.z + r.z);
+            }
+            // uv: one shared texture across the whole grid -> tiles are literal
+            // fragments of the image (uv slice per cell).
+            let u0 = i as f32 / cols as f32;
+            let u1 = (i + 1) as f32 / cols as f32;
+            let v0 = j as f32 / rows as f32;
+            let v1 = (j + 1) as f32 / rows as f32;
+            let uvs = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)];
+            // DEBUG: tint alternating cells so the grid is visible (proof the
+            // subdivision exists). CYBERPUZZLE_TINT=1. Off -> lam unchanged.
+            if tint_on {
+                let t = if (i + j) % 2 == 0 { 1.0 } else { 0.5 };
+                draw_textured_quad_tint(&mut img, &mut depth, tex, corners, uvs, t);
+            } else {
+                draw_textured_quad(&mut img, &mut depth, tex, corners, uvs);
+            }
+        }
     }
-    let uvs = [(0.0f32, 0.0f32), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
-    draw_textured_quad(&mut img, &mut depth, tex, corners, uvs);
     img
 }
 
