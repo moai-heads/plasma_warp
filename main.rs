@@ -190,6 +190,17 @@ impl Tex {
 #[inline]
 fn smooth(k: f32) -> f32 { k * k * (3.0 - 2.0 * k) }
 
+// Ease-out exponential: maps elapsed fraction e in [0,1] -> assembly scaler s
+// in [1,0]. s(0)=1 (at origin), s(1)=0 (at the cell), with a STEEP start and a
+// shallow finish -- pieces launch fast and decelerate into place.
+//   s = (e^{-k e} - e^{-k}) / (1 - e^{-k})
+// Steepness k: larger = more front-loaded. Slope ratio start:end = e^k.
+#[inline]
+fn ease_out_expo(e: f32, k: f32) -> f32 {
+    let ek = (-k).exp();
+    (((-k * e).exp()) - ek) / (1.0 - ek)
+}
+
 // ---------------- Scene: Rotozoom ----------------
 
 #[inline]
@@ -600,6 +611,9 @@ const CYBERPUZZLE_ORIGIN_JITTER: f32 = 240.0;
 // L_i + FLY_DUR, so with FLY_DUR+WINDOW <= scene length every piece is down in
 // time. This creates the STREAM: pieces leave the corner one after another.
 const CYBERPUZZLE_FLY_DUR: f32 = 1.7;
+// Front-loading of the flight curve: 0 = linear, larger = pieces fly faster off
+// the origin and coast into place. Slope ratio (start:end) is e^k.
+const CYBERPUZZLE_EASE_K: f32 = 3.5;
 const CYBERPUZZLE_STAGGER_WINDOW: f32 = 2.0;
 
 fn cyberpuzzle_grid() -> (usize, usize) {
@@ -641,8 +655,9 @@ fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u
             let key = (kx + ky) * 0.5;                 // 0 lower-left .. 1 upper-right
             let launch = key * stagger;
             // linear flight progress: 1 before launch -> 0 when landed
-            let mut prog = 1.0 - ((st - launch) / fly_dur).clamp(0.0, 1.0);
-            let mut s = smooth(prog);
+            let e = ((st - launch) / fly_dur).clamp(0.0, 1.0); // elapsed fraction
+            let mut prog = 1.0 - e;                            // 1 -> 0 (drives spin)
+            let mut s = ease_out_expo(e, CYBERPUZZLE_EASE_K);  // 1 -> 0 (drives position)
             if let Some(f) = force_s { s = f; prog = if f == 0.0 { 0.0 } else { 1.0 }; }
             let base = [
                 V3::new(x0, y0, 0.0), // TL
