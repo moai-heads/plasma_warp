@@ -424,11 +424,152 @@ fn draw_pyramid(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut Vec<f32>,
     }
 }
 
-// ---------------- Scene: CyberPuzzle (skeleton) ----------------
-// Placeholder: renders a dark idle frame so the timeline entry compiles and
-// dev mode can target it. The real effect gets written into frame_cyberpuzzle.
-fn frame_skeleton(_st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
-    ImageBuffer::new(W as u32, H as u32)
+// ---------------- Scene: CyberPuzzle -- textured 3D quad pipeline ----------------
+// Software 3D pipeline for TEXTURED quads: perspective camera, perspective-
+// correct UV interpolation, depth buffer, flat per-face lambert lighting.
+// Built in stages (wabunja's plan); STAGE 1 = the renderer itself, proven with
+// a single rotating textured quad.
+
+#[derive(Clone, Copy)]
+struct V3 { x: f32, y: f32, z: f32 }
+impl V3 {
+    #[inline] fn new(x: f32, y: f32, z: f32) -> Self { V3 { x, y, z } }
+    #[inline] fn sub(self, o: V3) -> V3 { V3::new(self.x - o.x, self.y - o.y, self.z - o.z) }
+    #[inline] fn cross(self, o: V3) -> V3 {
+        V3::new(self.y * o.z - self.z * o.y,
+                self.z * o.x - self.x * o.z,
+                self.x * o.y - self.y * o.x)
+    }
+    #[inline] fn dot(self, o: V3) -> f32 { self.x * o.x + self.y * o.y + self.z * o.z }
+    #[inline] fn norm(self) -> V3 {
+        let l = (self.x * self.x + self.y * self.y + self.z * self.z).sqrt();
+        V3::new(self.x / l, self.y / l, self.z / l)
+    }
+}
+
+// Camera: eye at world origin looking down +Z. CAM_F is the focal length in
+// PIXELS. Setting CAM_F == CAM_D makes 1 world unit == 1 pixel at the quad
+// plane (Z == CAM_D) -- this is what lets the assembled quad reproduce a 2D
+// blit exactly, and it is the whole trick behind the puzzle anchor.
+const CAM_D: f32 = 1000.0;
+const CAM_F: f32 = CAM_D;
+const CX_PX: f32 = (W as f32) * 0.5;
+const CY_PX: f32 = (H as f32) * 0.5;
+// Global light direction == the camera's front direction (both +Z). An
+// assembled (screen-parallel) quad therefore faces the light head-on and
+// lights to exactly 1.0 (see draw_textured_quad). Two-sided lambert.
+const LIGHT: V3 = V3 { x: 0.0, y: 0.0, z: 1.0 };
+
+#[inline]
+fn project(p: V3) -> (f32, f32, f32) { // -> screen x, screen y, 1/z
+    let iz = 1.0 / p.z;
+    (CX_PX + CAM_F * p.x * iz, CY_PX - CAM_F * p.y * iz, iz)
+}
+
+// Perspective-correct textured triangle. Screen-space barycentrics interpolate
+// (u/z, v/z, 1/z); the divide by interpolated 1/z reconstructs correct u,v.
+// lam = flat per-face lighting. Depth test on view-space z (smaller = closer).
+#[allow(clippy::too_many_arguments)]
+fn raster_tex_tri(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
+                  sx: [f32; 3], sy: [f32; 3],
+                  u: [f32; 3], v: [f32; 3], invz: [f32; 3],
+                  tex: &Tex, lam: f32) {
+    let area = (sx[1] - sx[0]) * (sy[2] - sy[0]) - (sy[1] - sy[0]) * (sx[2] - sx[0]);
+    if area.abs() < 1e-9 { return; }
+    let inva = 1.0 / area;
+    let minx = sx.iter().cloned().fold(f32::MAX, f32::min).floor().max(0.0) as i32;
+    let maxx = sx.iter().cloned().fold(f32::MIN, f32::max).ceil().min((W - 1) as f32) as i32;
+    let miny = sy.iter().cloned().fold(f32::MAX, f32::min).floor().max(0.0) as i32;
+    let maxy = sy.iter().cloned().fold(f32::MIN, f32::max).ceil().min((H - 1) as f32) as i32;
+    for py in miny..=maxy {
+        for px in minx..=maxx {
+            let fxp = px as f32 + 0.5;
+            let fyp = py as f32 + 0.5;
+            let w0 = ((sx[1] - fxp) * (sy[2] - fyp) - (sy[1] - fyp) * (sx[2] - fxp)) * inva;
+            let w1 = ((sx[2] - fxp) * (sy[0] - fyp) - (sy[2] - fyp) * (sx[0] - fxp)) * inva;
+            let w2 = 1.0 - w0 - w1;
+            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 { continue; }
+            let iz = w0 * invz[0] + w1 * invz[1] + w2 * invz[2];
+            if iz <= 0.0 { continue; }
+            let z = 1.0 / iz;
+            let idx = py as usize * W + px as usize;
+            if z < depth[idx] {
+                depth[idx] = z;
+                let uu = ((w0 * u[0] * invz[0] + w1 * u[1] * invz[1] + w2 * u[2] * invz[2]) / iz).clamp(0.0, 1.0);
+                let vv = ((w0 * v[0] * invz[0] + w1 * v[1] * invz[1] + w2 * v[2] * invz[2]) / iz).clamp(0.0, 1.0);
+                let c = tex.sample_clamp(uu, vv);
+                img.put_pixel(px as u32, py as u32, Rgb([
+                    (c[0] * lam).clamp(0.0, 255.0) as u8,
+                    (c[1] * lam).clamp(0.0, 255.0) as u8,
+                    (c[2] * lam).clamp(0.0, 255.0) as u8,
+                ]));
+            }
+        }
+    }
+}
+
+// Letterbox fit: the largest uniform scale that still shows the WHOLE texture
+// (black bars on the remaining sides).
+fn fit_letterbox(tw: f32, th: f32) -> (f32, f32) {
+    let s = (W as f32 / tw).min(H as f32 / th);
+    (tw * s, th * s)
+}
+
+// Draw one textured quad (two triangles). Corners in world space, order
+// [TL, TR, BR, BL]; uvs likewise. Flat lambert per face, two-sided (see LIGHT).
+fn draw_textured_quad(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
+                      tex: &Tex, c: [V3; 4], uvs: [(f32, f32); 4]) {
+    let n = c[1].sub(c[0]).cross(c[3].sub(c[0])).norm();
+    // assembled quad -> |n.LIGHT| == 1 -> lam == 1.0 exactly
+    let lam = 0.25 + 0.75 * n.dot(LIGHT).abs();
+    let mut sx = [0.0f32; 4];
+    let mut sy = [0.0f32; 4];
+    let mut invz = [0.0f32; 4];
+    for i in 0..4 {
+        let (a, b, iz) = project(c[i]);
+        sx[i] = a; sy[i] = b; invz[i] = iz;
+    }
+    for &(a, b, cc) in &[(0usize, 1usize, 2usize), (0, 2, 3)] {
+        raster_tex_tri(img, depth,
+                       [sx[a], sx[b], sx[cc]], [sy[a], sy[b], sy[cc]],
+                       [uvs[a].0, uvs[b].0, uvs[cc].0],
+                       [uvs[a].1, uvs[b].1, uvs[cc].1],
+                       [invz[a], invz[b], invz[cc]], tex, lam);
+    }
+}
+
+fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+    let mut img = ImageBuffer::new(W as u32, H as u32);
+    let mut depth = vec![f32::INFINITY; W * H];
+    // STAGE 1 TEST: one textured quad, letterboxed, spinning in place.
+    let (qw, qh) = fit_letterbox(tex.w as f32, tex.h as f32);
+    let center = V3::new(0.0, 0.0, CAM_D);
+    let yaw = st * 1.1;
+    let pitch = 0.45 * (st * 0.7).sin();
+    let roll = 0.25 * (st * 0.5).sin();
+    let (cy_, syw) = (yaw.cos(), yaw.sin());
+    let (cp_, spy) = (pitch.cos(), pitch.sin());
+    let (cr_, srl) = (roll.cos(), roll.sin());
+    let rot = |p: V3| -> V3 {
+        let (x1, y1) = (p.x * cr_ - p.y * srl, p.x * srl + p.y * cr_);
+        let (y2, z2) = (y1 * cp_ - p.z * spy, y1 * spy + p.z * cp_);
+        let (x3, z3) = (x1 * cy_ + z2 * syw, -x1 * syw + z2 * cy_);
+        V3::new(x3, y2, z3)
+    };
+    let local = [
+        V3::new(-qw * 0.5,  qh * 0.5, 0.0),
+        V3::new( qw * 0.5,  qh * 0.5, 0.0),
+        V3::new( qw * 0.5, -qh * 0.5, 0.0),
+        V3::new(-qw * 0.5, -qh * 0.5, 0.0),
+    ];
+    let mut corners = [V3::new(0.0, 0.0, 0.0); 4];
+    for i in 0..4 {
+        let r = rot(local[i]);
+        corners[i] = V3::new(center.x + r.x, center.y + r.y, center.z + r.z);
+    }
+    let uvs = [(0.0f32, 0.0f32), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+    draw_textured_quad(&mut img, &mut depth, tex, corners, uvs);
+    img
 }
 
 fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, kick: f32, beat: &BeatSync) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
@@ -559,7 +700,7 @@ fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, kick: f32, beat: 
 
 // ---------------- Scene dispatch ----------------
 
-fn frame_for(scene: Scene, texs: &[&Tex; 3], blurs: &[&Tex; 3],
+fn frame_for(scene: Scene, texs: &[&Tex; 5], blurs: &[&Tex; 5],
              t0: usize, t1: usize, st: f32, gt: f32, mix: f32, punch: f32, beat: &BeatSync)
     -> ImageBuffer<Rgb<u8>, Vec<u8>>
 {
@@ -572,7 +713,7 @@ fn frame_for(scene: Scene, texs: &[&Tex; 3], blurs: &[&Tex; 3],
             frame_rotozoom(texs[t0], blurs[t0], texs[t1], blurs[t1], gt, mix, p)
         }
         Scene::TriangleDance => frame_tri(texs[2], blurs[2], st, gt, punch, beat.punch_kick(gt), beat), // blue bg; mesh=snare, bg=kick
-        Scene::CyberPuzzle => frame_skeleton(st, gt), // placeholder until the effect lands
+        Scene::CyberPuzzle => frame_cyberpuzzle(texs[3], st, gt), // textured 3D quad pipeline (tex_scene3)
     }
 }
 
@@ -598,7 +739,7 @@ fn parse_scene(s: &str) -> Option<Scene> {
 //   fade_out     : fade to black at end (handoff to the next scene)
 //   wrap         : dissolve back into the first scene at the very end (loop)
 fn render_range(scene: Scene, start: f32, dur: f32,
-                texs: &[&Tex; 3], blurs: &[&Tex; 3], beat: &BeatSync,
+                texs: &[&Tex; 5], blurs: &[&Tex; 5], beat: &BeatSync,
                 demo_fade_in: bool, fade_out: bool, wrap: bool, idx0: usize)
     -> usize
 {
@@ -655,16 +796,19 @@ fn render_range(scene: Scene, start: f32, dur: f32,
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    std::fs::create_dir_all("/root/plasma_warp/frames").expect("create frames dir");
     let a = Tex::load("/root/plasma_warp/tex_purple.png");
     let b = Tex::load("/root/plasma_warp/tex_green.png");
     let c = Tex::load("/root/plasma_warp/tex_blue.png");
     let d = Tex::load("/root/plasma_warp/tex_scene3.png"); // reserved: next scene (not used yet)
     let e = Tex::load("/root/plasma_warp/tex_scene4.png"); // reserved: RGBA overlay sprite w/ transparent px (not used yet)
-    let texs = [&a, &b, &c];
+    let texs = [&a, &b, &c, &d, &e];
     let blur_a = a.blur();
     let blur_b = b.blur();
     let blur_c = c.blur();
-    let blurs = [&blur_a, &blur_b, &blur_c];
+    let blur_d = d.blur();
+    let blur_e = e.blur();
+    let blurs = [&blur_a, &blur_b, &blur_c, &blur_d, &blur_e];
     let beat = BeatSync::load("/root/plasma_warp/beats.txt",
                                 "/root/plasma_warp/kicks.txt",
                                 0.22, SONG_LEN);
@@ -673,6 +817,7 @@ fn main() {
     let timeline: Vec<(Scene, f32, f32)> = vec![
         (Scene::Rotozoom, 0.0, 16.0),
         (Scene::TriangleDance, 16.0, 16.0),
+        (Scene::CyberPuzzle, 32.0, 4.0), // STAGE 1: renderer test, 4s
     ];
 
     let mode = args.get(1).map(|s| s.as_str()).unwrap_or("demo");
