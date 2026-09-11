@@ -1,6 +1,6 @@
 *.mp4
 *.gif
-frames/
+frames*/
 app
 
 # sync verification artifact

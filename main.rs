@@ -635,6 +635,14 @@ const CYBERPUZZLE_MIN_TURNS: f32 = 0.4;
 const CYBERPUZZLE_ORIGIN_X: f32 = -260.0;
 const CYBERPUZZLE_ORIGIN_Y: f32 = (H as f32) + 200.0;
 const CYBERPUZZLE_ORIGIN_JITTER: f32 = 240.0;
+// Launch DEPTH: pieces start this far BEHIND the quad plane (further from the
+// camera) and fly forward to it. In perspective, pushing the off-screen
+// lower-left origin deeper drags its projection up toward the vanishing point,
+// so the stream reads as dropping in from ABOVE instead of sliding along the
+// plane. The depth spread also keeps overlapping pieces on separate z during
+// flight, so the z-buffer resolves them instead of the surfaces fighting.
+const CYBERPUZZLE_ORIGIN_Z: f32 = 700.0;        // base depth offset, world units
+const CYBERPUZZLE_ORIGIN_Z_JITTER: f32 = 400.0; // hashed extra depth per piece
 // Per-piece flight duration and the window over which launch times are spread.
 const CYBERPUZZLE_FLY_DUR: f32 = 1.7;
 // Front-loading of the flight curve: 0 = linear, larger = pieces fly faster off
@@ -644,7 +652,7 @@ const CYBERPUZZLE_STAGGER_WINDOW: f32 = 2.0;
 // Post-assembly choreography: hold the finished picture for HOLD seconds,
 // then flip every piece 180 degrees about its own Y axis to reveal the BACK
 // texture. During the fly-in BOTH faces show the front texture (see draw_textured_quad).
-const CYBERPUZZLE_HOLD: f32 = 3.0;
+const CYBERPUZZLE_HOLD: f32 = 1.5;
 const CYBERPUZZLE_FLIP_DUR: f32 = 1.2;
 // SHARED-VERTEX SHAPE DISPLACEMENT (wabunja's scheme):
 // The grid is ONE watertight mesh of shared vertices -- vertex (gi,gj) is owned
@@ -729,6 +737,7 @@ fn frame_cyberpuzzle(tex: &Tex, back_tex: &Tex, st: f32, _gt: f32) -> ImageBuffe
     let vidx = |gi: usize, gj: usize| gj * (cols + 1) + gi;
     let center = V3::new(0.0, 0.0, CAM_D);
     let force_s: Option<f32> = std::env::var("CYBERPUZZLE_FORCE_S").ok().and_then(|v| v.parse().ok());
+    let origin_z: f32 = std::env::var("CYBERPUZZLE_ORIGIN_Z").ok().and_then(|v| v.parse().ok()).unwrap_or(CYBERPUZZLE_ORIGIN_Z);
     let tint_on = std::env::var_os("CYBERPUZZLE_TINT").is_some();
     let spin_rate: f32 = std::env::var("CYBERPUZZLE_SPIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
     let spin = spin_rate * (st - (stagger + fly_dur)).max(0.0);
@@ -771,7 +780,8 @@ fn frame_cyberpuzzle(tex: &Tex, back_tex: &Tex, st: f32, _gt: f32) -> ImageBuffe
             // screen px -> world at the quad plane (1 unit == 1 px at z=CAM_D)
             let ox_w = (ox_px - CX_PX) * CAM_D / CAM_F;
             let oy_w = (CY_PX - oy_px) * CAM_D / CAM_F;
-            let dz = hash01(i, j, 9.0) * 400.0;            // 0..400 farther
+            let dz = origin_z                               // deep launch...
+                + hash01(i, j, 9.0) * CYBERPUZZLE_ORIGIN_Z_JITTER; // ...plus spread
             let dx = ox_w - cc.x;
             let dy = oy_w - cc.y;
             // per-piece tumble about a hashed axis + hashed turn count (< MAX),
@@ -1055,7 +1065,7 @@ fn main() {
     let timeline: Vec<(Scene, f32, f32)> = vec![
         (Scene::Rotozoom, 0.0, 16.0),
         (Scene::TriangleDance, 16.0, 16.0),
-        (Scene::CyberPuzzle, 32.0, 8.0), // fly-in + hold 3s + 180 flip reveal
+        (Scene::CyberPuzzle, 32.0, 6.5), // fly-in + hold 1.5s + 180 flip reveal
     ];
 
     let mode = args.get(1).map(|s| s.as_str()).unwrap_or("demo");
