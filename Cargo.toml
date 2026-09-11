@@ -14,12 +14,12 @@ path = "src/main.rs"
 # Default = the actual demo: realtime SDL3 window + music playback.
 # `--no-default-features` builds the headless PNG frame dumper (no SDL needed).
 default = ["realtime"]
-realtime = ["dep:sdl3", "dep:lewton"]
+realtime = ["dep:sdl3"]
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
-sdl3 = { version = "0.20", optional = true }
-lewton = { version = "0.10", optional = true }
+# SDL3 + SDL3_mixer (the `mixer` feature links system SDL3_mixer).
+sdl3 = { version = "0.20", optional = true, features = ["mixer"] }
 
 [profile.release]
 opt-level = 3

@@ -15,15 +15,18 @@ Timeline (demo-local seconds, loops):
 ## Requirements
 
 - **Rust** 1.80+ (verified on 1.98.1) and Cargo.
-- **SDL3** development package, for the default (realtime) build:
-  - Arch / Manjaro: `sudo pacman -S sdl3`
-  - Debian / Ubuntu: `sudo apt install libsdl3-dev`
-  - macOS: `brew install sdl3`
-  - Windows: SDL3 via `vcpkg` (`cargo` will try pkg-config then vcpkg)
+- **SDL3 and SDL3_mixer** development packages, for the default (realtime)
+  build:
+  - Arch / Manjaro: `sudo pacman -S sdl3 sdl3_mixer`
+  - Debian / Ubuntu: `sudo apt install libsdl3-dev libsdl3-mixer-dev`
+  - macOS: `brew install sdl3 sdl3_mixer`
+  - Windows: SDL3 + SDL3_mixer via `vcpkg` (cargo tries pkg-config, then vcpkg)
 - **No SDL needed** for the headless frame-dumper build.
 
-There are no other C dependencies: OGG/Vorbis decoding is pure Rust (`lewton`),
-image decoding is `image`.
+`cargo` finds the libraries via `pkg-config` (a `sdl3.pc` / `sdl3-mixer.pc`).
+The only other dependency is pure-Rust `image`; audio (Ogg/Vorbis decoding +
+mixing) is handled by **SDL3_mixer**, so there is no `lewton`/libvorbis build
+step of our own.
 
 ## Build & run — realtime window + music (default)
 
@@ -32,7 +35,8 @@ cargo run --release
 ```
 
 Opens a resizable SDL3 window (renders at 640×360, scaled + letterboxed) and
-plays `meltdown_beat.ogg` underneath, in sync with the visual timeline.
+plays `meltdown_beat.ogg` underneath via **SDL3_mixer**, looping, in sync with
+the visual timeline.
 
 - **Esc** or closing the window quits.
 - The demo is a software renderer at 30 fps; on a slow machine a release build
@@ -76,7 +80,7 @@ this project. If timing is wrong, fix the labels, not the code.
 
 | feature | default | effect |
 |---|---|---|
-| `realtime` | **yes** | SDL3 window + music playback (`sdl3`, `lewton`) |
+| `realtime` | **yes** | SDL3 window + music playback (`sdl3` + `sdl3/mixer`) |
 | *(none)* | | headless PNG frame dumper (image only) |
 
 ## Handy environment knobs

@@ -1268,58 +1268,21 @@ fn main() {
 
 // ---------------- Realtime SDL3 player (Cargo feature "realtime") ----------------
 // Renders the same frames the headless dumper would write, but straight into an
-// SDL3 window at 30 fps, with meltdown_beat.ogg playing underneath.
+// SDL3 window at 30 fps, with meltdown_beat.ogg playing underneath via
+// SDL3_mixer (looping). Pointer-driven, no gamepad.
 #[cfg(feature = "realtime")]
 mod realtime {
     use super::*;
-    use sdl3::audio::{AudioFormat, AudioSpec};
     use sdl3::event::Event;
     use sdl3::keyboard::Keycode;
+    use sdl3::mixer;
     use sdl3::pixels::{Color, PixelFormat};
     use sdl3::render::{ScaleMode, TextureAccess};
     use std::time::{Duration, Instant};
 
-    /// Decoded interleaved PCM, loopable.
-    struct Pcm { data: Vec<i16>, ch: usize, rate: i32 }
-    impl Pcm {
-        /// Copy `n` interleaved samples starting at `*cursor`, wrapping to the
-        /// start of the track when it runs out -- so the music loops forever.
-        fn take_loop(&self, cursor: &mut usize, n: usize) -> Vec<i16> {
-            let mut v = Vec::with_capacity(n);
-            if self.data.is_empty() { return v; }
-            while v.len() < n {
-                let rem = &self.data[*cursor..];
-                let take = rem.len().min(n - v.len());
-                v.extend_from_slice(&rem[..take]);
-                *cursor += take;
-                if *cursor >= self.data.len() { *cursor = 0; }
-            }
-            v
-        }
-    }
-
-    /// Decode an OGG/Vorbis file to interleaved i16 at its native rate.
-    fn decode_ogg(path: &str) -> Pcm {
-        let f = std::fs::File::open(path)
-            .unwrap_or_else(|e| panic!("cannot open {path}: {e}"));
-        let mut rdr = lewton::inside_ogg::OggStreamReader::new(f)
-            .unwrap_or_else(|e| panic!("ogg open {path}: {e:?}"));
-        let ch = rdr.ident_hdr.audio_channels as usize;
-        let rate = rdr.ident_hdr.audio_sample_rate as i32;
-        let mut data = Vec::new();
-        while let Some(pkt) = rdr.read_dec_packet_itl().expect("ogg decode") {
-            data.extend_from_slice(&pkt);
-        }
-        Pcm { data, ch, rate }
-    }
-
     pub fn run(sd: &SceneData) {
         let texs = sd.tex_refs();
         let blurs = sd.blur_refs();
-
-        let pcm = decode_ogg(&asset("meltdown_beat.ogg"));
-        eprintln!("realtime: music {} samples/ch @ {} Hz / {} ch",
-                  pcm.data.len() / pcm.ch, pcm.rate, pcm.ch);
 
         let sdl = sdl3::init().expect("SDL_Init failed");
 
@@ -1342,15 +1305,19 @@ mod realtime {
             .expect("create streaming texture");
         tex.set_scale_mode(ScaleMode::Linear);
 
-        // ---- audio device + stream (topped up from the main loop) ----
-        let audio = sdl.audio().expect("SDL audio subsystem");
-        let spec = AudioSpec::new(Some(pcm.rate), Some(pcm.ch as i32), Some(AudioFormat::s16_sys()));
-        let device = audio.open_playback_device(&spec).expect("open audio device");
-        let stream = device.open_device_stream(Some(&spec)).expect("open audio stream");
-        let mut cursor = 0usize;
-        // ~0.5 s prefill, then keep ~1 s queued
-        let _ = stream.put_data_i16(&pcm.take_loop(&mut cursor, pcm.rate as usize / 2));
-        stream.resume().expect("resume audio");
+        // ---- audio: SDL3_mixer (init must follow SDL_Init; needs the audio subsystem) ----
+        let _audio_subsys = sdl.audio().expect("SDL audio subsystem");
+        let _mix_ctx = mixer::init().expect("MIX_Init failed");
+        let mixer = mixer::Mixer::open_device(None).expect("open default mixer device");
+        let music = mixer
+            .load_audio(asset("meltdown_beat.ogg"), true)
+            .expect("load meltdown_beat.ogg");
+        let track = mixer.create_track().expect("create mixer track");
+        track.set_audio(&music).expect("assign audio to track");
+        track.set_loops(-1).expect("loop forever");     // -1 == play forever
+        track.play().expect("start playback");
+        eprintln!("realtime: SDL3_mixer {} decoders, music looping",
+                  mixer::get_num_audio_decoders());
 
         let max_frames: u64 = std::env::var("PLASMA_MAX_FRAMES")
             .ok().and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -1368,12 +1335,6 @@ mod realtime {
                     Event::KeyDown { keycode: Some(Keycode::Escape), .. } => break 'running,
                     _ => {}
                 }
-            }
-
-            // top up audio: keep ~1 s (bytes = frames * channels * 2)
-            let low = pcm.rate * pcm.ch as i32 * 2;
-            if stream.queued_bytes().unwrap_or(i32::MAX) < low {
-                let _ = stream.put_data_i16(&pcm.take_loop(&mut cursor, pcm.rate as usize / 2));
             }
 
             let t = start.elapsed().as_secs_f32();
@@ -1395,7 +1356,6 @@ mod realtime {
         eprintln!("realtime: {} frames rendered", frames);
     }
 }
-
 
 fn fade(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, k: f32) {
     for p in img.pixels_mut() {

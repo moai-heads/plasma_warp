@@ -62,3 +62,9 @@ file; this one is ours, versioned in the repo, and safe to read and edit here.
   are NOT.
 - Deliverable = one zip: source + `Cargo.toml` + `Cargo.lock` + `README.md` +
   assets. Never ship `target/` or a populated cargo cache.
+
+## 8. Audio (SDL3_mixer)
+- Realtime playback uses **SDL3_mixer** (`sdl3` crate `mixer` feature) — it
+  loads `meltdown_beat.ogg` and loops it. No hand-rolled PCM/lewton path.
+- Requires the `sdl3_mixer` system dev package (plus SDL3). The headless dumper
+  build (`--no-default-features`) needs neither.
