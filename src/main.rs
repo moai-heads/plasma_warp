@@ -1048,12 +1048,109 @@ fn parse_scene(s: &str) -> Option<Scene> {
 //   demo_fade_in : global black fade-in (only when this entry opens the demo)
 //   fade_out     : fade to black at end (handoff to the next scene)
 //   wrap         : dissolve back into the first scene at the very end (loop)
+// ---------------- Asset / output paths ----------------
+// Relative to the CWD so the packaged project runs anywhere.
+// Override with PLASMA_ASSET_DIR / PLASMA_FRAMES_DIR.
+fn asset_dir() -> String {
+    std::env::var("PLASMA_ASSET_DIR").unwrap_or_else(|_| ".".to_string())
+}
+fn frames_dir() -> String {
+    std::env::var("PLASMA_FRAMES_DIR").unwrap_or_else(|_| "frames".to_string())
+}
+fn asset(name: &str) -> String {
+    format!("{}/{}", asset_dir().trim_end_matches('/'), name)
+}
+
+// ---------------- Scene data: textures + sync + timeline ----------------
+struct SceneData {
+    texs: Vec<Tex>,
+    blurs: Vec<Tex>,
+    beat: BeatSync,
+    timeline: Vec<(Scene, f32, f32)>,
+}
+impl SceneData {
+    fn load() -> Self {
+        let names = ["tex_purple.png", "tex_green.png", "tex_blue.png",
+                     "tex_scene3.png", "tex_scene4.png"];
+        let texs: Vec<Tex> = names.iter().map(|n| Tex::load(&asset(n))).collect();
+        let blurs: Vec<Tex> = texs.iter().map(|t| t.blur()).collect();
+        let beat = BeatSync::load(&asset("beats.txt"), &asset("kicks.txt"), 0.22, SONG_LEN);
+        // TIMELINE: (scene, demo_start_sec, duration_sec) -- the sync contract.
+        let timeline: Vec<(Scene, f32, f32)> = vec![
+            (Scene::Rotozoom, 0.0, 16.0),
+            (Scene::TriangleDance, 16.0, 16.0),
+            (Scene::CyberPuzzle, 32.0, 8.2), // unify-on-snare + jiggle + snare-triggered flip reveal
+        ];
+        SceneData { texs, blurs, beat, timeline }
+    }
+    fn tex_refs(&self) -> [&Tex; 5] {
+        [&self.texs[0], &self.texs[1], &self.texs[2], &self.texs[3], &self.texs[4]]
+    }
+    fn blur_refs(&self) -> [&Tex; 5] {
+        [&self.blurs[0], &self.blurs[1], &self.blurs[2], &self.blurs[3], &self.blurs[4]]
+    }
+}
+
+// Which texture slot pair a scene cross-fades between.
+fn scene_segs(scene: Scene) -> [usize; 2] {
+    match scene {
+        Scene::Rotozoom => [0, 1],
+        Scene::TriangleDance => [2, 1],
+        Scene::CyberPuzzle => [3, 3],
+    }
+}
+
+// Render one frame of the FULL timeline at demo-local time `t` (looping).
+// The realtime player's equivalent of render_range's inner loop: identical
+// scene math and handoff fades, but driven by wall-clock time instead of a
+// frame counter.
+#[allow(dead_code)]
+fn timeline_frame(sd: &SceneData, texs: &[&Tex; 5], blurs: &[&Tex; 5], t: f32)
+    -> ImageBuffer<Rgb<u8>, Vec<u8>>
+{
+    let total: f32 = sd.timeline.last().map(|(_, s, d)| s + d).unwrap_or(SEG_SECS).max(0.001);
+    let t = t.rem_euclid(total);
+    let (scene, start, dur) = *sd.timeline.iter()
+        .find(|(_, s, d)| t >= *s && t < *s + *d)
+        .unwrap_or_else(|| sd.timeline.last().unwrap());
+    let st = t - start;      // scene-local time
+    let gt = t;              // demo-timeline time == song position
+    let sj = ((st / SEG_SECS) as usize).min(1);
+    let fl = st - sj as f32 * SEG_SECS;
+    let tex_mix = if sj == 0 && fl >= SEG_SECS - FADE_SECS {
+        smooth((fl - (SEG_SECS - FADE_SECS)) / FADE_SECS)
+    } else { 0.0 };
+    let segs = scene_segs(scene);
+    let (t0, t1) = (segs[sj], segs[1 - sj]);
+    let punch = sd.beat.punch(gt);
+    let mut frame = frame_for(scene, texs, blurs, t0, t1, st, gt, tex_mix, punch, &sd.beat);
+    if gt < FADE_SECS { fade(&mut frame, smooth(gt / FADE_SECS)); }
+    match scene {
+        Scene::Rotozoom => {
+            if st > dur - FADE_SECS {
+                fade(&mut frame, 1.0 - smooth((st - (dur - FADE_SECS)) / FADE_SECS));
+            }
+        }
+        Scene::TriangleDance => {
+            if st < FADE_SECS { fade(&mut frame, smooth(st / FADE_SECS)); }
+        }
+        Scene::CyberPuzzle => {}
+    }
+    frame
+}
+
+// Render one timeline entry (headless frame dumper): `start` = demo-timeline
+// seconds where this scene sits, `dur` = its length. Flags control the handoff
+// fades:
+//   demo_fade_in : global black fade-in (only when this entry opens the demo)
+//   fade_out     : fade to black at end (handoff to the next scene)
+//   wrap         : dissolve back into the first scene at the very end (loop)
 fn render_range(scene: Scene, start: f32, dur: f32,
                 texs: &[&Tex; 5], blurs: &[&Tex; 5], beat: &BeatSync,
                 demo_fade_in: bool, fade_out: bool, wrap: bool, idx0: usize)
     -> usize
 {
-    let scene_segs = match scene { Scene::Rotozoom => [0usize, 1], Scene::TriangleDance => [2, 1], Scene::CyberPuzzle => [3, 3] }; // CyberPuzzle: reserved texture slot, idle for now
+    let segs = scene_segs(scene);
     let show = (SEG_SECS * FPS as f32) as usize;
     let d = (FADE_SECS * FPS as f32) as usize;
     let total = (dur * FPS as f32) as usize;
@@ -1067,8 +1164,8 @@ fn render_range(scene: Scene, start: f32, dur: f32,
         let tex_mix = if sj == 0 && fl >= show - d {
             smooth((fl - (show - d)) as f32 / d as f32)
         } else { 0.0 };
-        let t0 = scene_segs[sj];
-        let t1 = scene_segs[1 - sj];
+        let t0 = segs[sj];
+        let t1 = segs[1 - sj];
         let punch = beat.punch(gt);
         let mut frame = frame_for(scene, texs, blurs, t0, t1, st, gt, tex_mix, punch, beat);
 
@@ -1095,64 +1192,210 @@ fn render_range(scene: Scene, start: f32, dur: f32,
                     mix_frames(&mut frame, &nf, k);
                 }
             }
-            Scene::CyberPuzzle => {} // skeleton: no choreography yet
+            Scene::CyberPuzzle => {}
         }
-        frame.save(format!("/root/plasma_warp/frames/f{:05}.png", idx)).unwrap();
+        frame.save(format!("{}/f{:05}.png", frames_dir(), idx)).unwrap();
         idx += 1;
         f += 1;
     }
     idx
 }
 
+// ---------------- Entry points ----------------
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    std::fs::create_dir_all("/root/plasma_warp/frames").expect("create frames dir");
-    let a = Tex::load("/root/plasma_warp/tex_purple.png");
-    let b = Tex::load("/root/plasma_warp/tex_green.png");
-    let c = Tex::load("/root/plasma_warp/tex_blue.png");
-    let d = Tex::load("/root/plasma_warp/tex_scene3.png"); // reserved: next scene (not used yet)
-    let e = Tex::load("/root/plasma_warp/tex_scene4.png"); // reserved: RGBA overlay sprite w/ transparent px (not used yet)
-    let texs = [&a, &b, &c, &d, &e];
-    let blur_a = a.blur();
-    let blur_b = b.blur();
-    let blur_c = c.blur();
-    let blur_d = d.blur();
-    let blur_e = e.blur();
-    let blurs = [&blur_a, &blur_b, &blur_c, &blur_d, &blur_e];
-    let beat = BeatSync::load("/root/plasma_warp/beats.txt",
-                                "/root/plasma_warp/kicks.txt",
-                                0.22, SONG_LEN);
+    let arg1 = args.get(1).map(|s| s.as_str()).unwrap_or("");
+    let headless_cmd = matches!(arg1, "demo" | "dump" | "dev");
 
-    // TIMELINE: (scene, demo_start_sec, duration_sec) -- the sync contract.
-    let timeline: Vec<(Scene, f32, f32)> = vec![
-        (Scene::Rotozoom, 0.0, 16.0),
-        (Scene::TriangleDance, 16.0, 16.0),
-        (Scene::CyberPuzzle, 32.0, 8.2), // unify-on-snare + jiggle + snare-triggered flip reveal
-    ];
+    // Default (no args) = realtime SDL3 window + music, when built with the
+    // `realtime` feature. `demo` / `dump` / `dev` always use the headless
+    // frame dumper (cargo run --no-default-features ... or cargo run -- demo).
+    #[cfg(feature = "realtime")]
+    {
+        if !headless_cmd {
+            let sd = SceneData::load();
+            realtime::run(&sd);
+            return;
+        }
+    }
+    #[cfg(not(feature = "realtime"))]
+    {
+        if !headless_cmd {
+            eprintln!("(built without the `realtime` feature -> headless frame dumper)");
+        }
+    }
 
-    let mode = args.get(1).map(|s| s.as_str()).unwrap_or("demo");
+    // ---- headless frame dumper ----
+    let sd = SceneData::load();
+    let texs = sd.tex_refs();
+    let blurs = sd.blur_refs();
+    std::fs::create_dir_all(frames_dir()).expect("create frames dir");
+    let out = frames_dir();
+    let mode = if arg1.is_empty() { "demo" } else { arg1 };
+
+    // hidden: render ONE frame with the realtime path's timeline math (verification)
+    if mode == "tframe" {
+        let t: f32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        let frame = timeline_frame(&sd, &texs, &blurs, t);
+        frame.save(format!("{}/tframe.png", frames_dir())).unwrap();
+        eprintln!("TFRAME t={:.4}s -> {}/tframe.png", t, out);
+        return;
+    }
+
     if mode == "dev" {
         // dev mode: single scene, exits when done. Music starts at start % SONG_LEN.
         let name = args.get(2).map(|s| s.as_str()).unwrap_or("");
-        let sc = parse_scene(name).unwrap_or_else(|| panic!("usage: app dev <rotozoom|triangledance>"));
-        let (scene, start, dur) = *timeline.iter().find(|(s, _, _)| *s == sc)
+        let sc = parse_scene(name)
+            .unwrap_or_else(|| panic!("usage: plasma_warp dev <rotozoom|triangledance|cyberpuzzle>"));
+        let (scene, start, dur) = *sd.timeline.iter().find(|(s, _, _)| *s == sc)
             .unwrap_or_else(|| panic!("scene not in timeline"));
         eprintln!("DEV MODE: {:?} | demo-timeline start {:.3}s, dur {:.1}s", scene, start, dur);
-        let n = render_range(scene, start, dur, &texs, &blurs, &beat, start == 0.0, false, false, 0);
-        eprintln!("ALL FRAMES DONE ({})", n);
-        eprintln!("AUDIO_OFFSET={:.3}", (start % SONG_LEN) + 0.0);
+        let n = render_range(scene, start, dur, &texs, &blurs, &sd.beat, start == 0.0, false, false, 0);
+        eprintln!("ALL FRAMES DONE ({}) -> {}/", n, out);
+        eprintln!("AUDIO_OFFSET={:.3}", start % SONG_LEN);
     } else {
         // demo mode: full timeline in order, with handoffs and loop wrap
         let mut idx = 0usize;
-        for (i, &(scene, start, dur)) in timeline.iter().enumerate() {
-            let last = i == timeline.len() - 1;
+        for (i, &(scene, start, dur)) in sd.timeline.iter().enumerate() {
+            let last = i == sd.timeline.len() - 1;
             eprintln!("DEMO: scene {:?} @ {:.1}s", scene, start);
-            idx = render_range(scene, start, dur, &texs, &blurs, &beat,
+            idx = render_range(scene, start, dur, &texs, &blurs, &sd.beat,
                                start == 0.0, !last, last, idx);
         }
-        eprintln!("ALL FRAMES DONE ({})", idx);
+        eprintln!("ALL FRAMES DONE ({}) -> {}/", idx, out);
     }
 }
+
+// ---------------- Realtime SDL3 player (Cargo feature "realtime") ----------------
+// Renders the same frames the headless dumper would write, but straight into an
+// SDL3 window at 30 fps, with meltdown_beat.ogg playing underneath.
+#[cfg(feature = "realtime")]
+mod realtime {
+    use super::*;
+    use sdl3::audio::{AudioFormat, AudioSpec};
+    use sdl3::event::Event;
+    use sdl3::keyboard::Keycode;
+    use sdl3::pixels::{Color, PixelFormat};
+    use sdl3::render::{ScaleMode, TextureAccess};
+    use std::time::{Duration, Instant};
+
+    /// Decoded interleaved PCM, loopable.
+    struct Pcm { data: Vec<i16>, ch: usize, rate: i32 }
+    impl Pcm {
+        /// Copy `n` interleaved samples starting at `*cursor`, wrapping to the
+        /// start of the track when it runs out -- so the music loops forever.
+        fn take_loop(&self, cursor: &mut usize, n: usize) -> Vec<i16> {
+            let mut v = Vec::with_capacity(n);
+            if self.data.is_empty() { return v; }
+            while v.len() < n {
+                let rem = &self.data[*cursor..];
+                let take = rem.len().min(n - v.len());
+                v.extend_from_slice(&rem[..take]);
+                *cursor += take;
+                if *cursor >= self.data.len() { *cursor = 0; }
+            }
+            v
+        }
+    }
+
+    /// Decode an OGG/Vorbis file to interleaved i16 at its native rate.
+    fn decode_ogg(path: &str) -> Pcm {
+        let f = std::fs::File::open(path)
+            .unwrap_or_else(|e| panic!("cannot open {path}: {e}"));
+        let mut rdr = lewton::inside_ogg::OggStreamReader::new(f)
+            .unwrap_or_else(|e| panic!("ogg open {path}: {e:?}"));
+        let ch = rdr.ident_hdr.audio_channels as usize;
+        let rate = rdr.ident_hdr.audio_sample_rate as i32;
+        let mut data = Vec::new();
+        while let Some(pkt) = rdr.read_dec_packet_itl().expect("ogg decode") {
+            data.extend_from_slice(&pkt);
+        }
+        Pcm { data, ch, rate }
+    }
+
+    pub fn run(sd: &SceneData) {
+        let texs = sd.tex_refs();
+        let blurs = sd.blur_refs();
+
+        let pcm = decode_ogg(&asset("meltdown_beat.ogg"));
+        eprintln!("realtime: music {} samples/ch @ {} Hz / {} ch",
+                  pcm.data.len() / pcm.ch, pcm.rate, pcm.ch);
+
+        let sdl = sdl3::init().expect("SDL_Init failed");
+
+        // ---- window + renderer + streaming texture ----
+        let video = sdl.video().expect("SDL video subsystem");
+        let window = video
+            .window("plasma_warp \u{2014} music-synced demo", (W * 2) as u32, (H * 2) as u32)
+            .position_centered()
+            .resizable()
+            .build()
+            .expect("create window");
+        let mut canvas = window.into_canvas();
+        // logical resolution = render size; SDL scales + letterboxes it into the window
+        let _ = canvas.set_logical_size(
+            W as u32, H as u32,
+            sdl3::sys::render::SDL_RendererLogicalPresentation::LETTERBOX);
+        let creator = canvas.texture_creator();
+        let mut tex = creator
+            .create_texture(PixelFormat::RGB24, TextureAccess::Streaming, W as u32, H as u32)
+            .expect("create streaming texture");
+        tex.set_scale_mode(ScaleMode::Linear);
+
+        // ---- audio device + stream (topped up from the main loop) ----
+        let audio = sdl.audio().expect("SDL audio subsystem");
+        let spec = AudioSpec::new(Some(pcm.rate), Some(pcm.ch as i32), Some(AudioFormat::s16_sys()));
+        let device = audio.open_playback_device(&spec).expect("open audio device");
+        let stream = device.open_device_stream(Some(&spec)).expect("open audio stream");
+        let mut cursor = 0usize;
+        // ~0.5 s prefill, then keep ~1 s queued
+        let _ = stream.put_data_i16(&pcm.take_loop(&mut cursor, pcm.rate as usize / 2));
+        stream.resume().expect("resume audio");
+
+        let max_frames: u64 = std::env::var("PLASMA_MAX_FRAMES")
+            .ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+
+        let mut events = sdl.event_pump().expect("event pump");
+        let start = Instant::now();
+        let frame_dt = Duration::from_secs_f64(1.0 / FPS as f64);
+        let mut next_frame = start;
+        let mut frames: u64 = 0;
+
+        'running: loop {
+            for ev in events.poll_iter() {
+                match ev {
+                    Event::Quit { .. } => break 'running,
+                    Event::KeyDown { keycode: Some(Keycode::Escape), .. } => break 'running,
+                    _ => {}
+                }
+            }
+
+            // top up audio: keep ~1 s (bytes = frames * channels * 2)
+            let low = pcm.rate * pcm.ch as i32 * 2;
+            if stream.queued_bytes().unwrap_or(i32::MAX) < low {
+                let _ = stream.put_data_i16(&pcm.take_loop(&mut cursor, pcm.rate as usize / 2));
+            }
+
+            let t = start.elapsed().as_secs_f32();
+            let frame = timeline_frame(sd, &texs, &blurs, t);
+            let _ = tex.update(None, frame.as_raw(), (W * 3) as usize);
+
+            canvas.set_draw_color(Color::RGB(0, 0, 0));
+            canvas.clear();
+            let _ = canvas.copy(&tex, None, None);
+            canvas.present();
+
+            frames += 1;
+            if max_frames > 0 && frames >= max_frames { break 'running; }
+
+            next_frame += frame_dt;
+            let now = Instant::now();
+            if next_frame > now { std::thread::sleep(next_frame - now); } else { next_frame = now; }
+        }
+        eprintln!("realtime: {} frames rendered", frames);
+    }
+}
+
 
 fn fade(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, k: f32) {
     for p in img.pixels_mut() {

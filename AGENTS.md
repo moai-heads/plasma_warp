@@ -19,8 +19,15 @@ file; this one is ours, versioned in the repo, and safe to read and edit here.
   small persistent assets (textures, sync labels). Renders rebuild on demand.
 
 ## 3. Build
-- Direct `rustc` only — Cargo is forbidden for project development.
-  See /root/POLICY/rust.md. Use the shared rlib vault at /root/rustlib/.
+- Two build paths, both from the SAME source (`src/main.rs`):
+  - **Packaged / user-facing — Cargo.** `cargo run --release` = realtime SDL3
+    window + music (the `realtime` feature, on by default). Headless dumper:
+    `cargo run --release --no-default-features -- demo` (or `-- dev <scene>`).
+    This is the build the user runs on their own machine.
+  - **Sandbox dev — direct `rustc`** against the shared rlib vault at
+    /root/rustlib/ (see /root/POLICY/rust.md). Use this for headless iteration
+    here:
+    `rustc --edition 2021 -O src/main.rs --extern image=/root/rustlib/libimage.rlib -L dependency=/root/rustlib -o app`
 - Always recompile before rendering; never claim a fix from a stale binary.
 
 ## 4. Sync data — hand-labelled ground truth
@@ -39,3 +46,19 @@ file; this one is ours, versioned in the repo, and safe to read and edit here.
 - Every change is a commit with a message saying what changed and why.
   Tag milestones. History is the version-jump mechanism — no hallucinated
   "previous versions".
+
+## 7. Cargo & disk hygiene (packaging policy)
+- Cargo is permitted for exactly two things: (a) packaging a buildable project
+  for the user, and (b) the throwaway-rlib protocol in /root/POLICY/rust.md.
+  Sandbox *development* stays on direct `rustc`.
+- Always build with `CARGO_TARGET_DIR=/tmp/...` so `target/` never lands in the
+  repo (`.gitignore` also carries `/target`).
+- `cargo check` / `cargo build` is allowed to prove the crate compiles — this
+  downloads `sdl3`, `lewton`, `image` and their deps from crates.io. Fine.
+- **Once the check passes and the project is packaged, purge every byte cargo
+  downloaded, immediately:** remove `~/.cargo/registry`, `~/.cargo/.global-cache`
+  and the `CARGO_TARGET_DIR`. No cargo build residue survives on the disk.
+- `Cargo.lock` IS committed (reproducible builds); `target/` and the registry
+  are NOT.
+- Deliverable = one zip: source + `Cargo.toml` + `Cargo.lock` + `README.md` +
+  assets. Never ship `target/` or a populated cargo cache.
