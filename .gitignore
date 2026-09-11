@@ -1,13 +1,32 @@
 # build artifacts / renders (never committed)
 /target
+app
+frames*/
+sync_verification.png
 *.mp4
 *.gif
-frames*/
-app
-sync_verification.png
 
-# assets -- kept out of the repo and off GitHub, distributed separately
+# ---- MEDIA ASSETS (image + sound): MUST NEVER be committed or reach GitHub ----
+# distributed separately with the project
 *.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.webp
+*.tga
+*.tif
+*.tiff
 *.ogg
-beats.txt
-kicks.txt
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.flac
+*.opus
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# ---- sync data IS tracked (hand-labelled onsets): beats.txt / kicks.txt ----
