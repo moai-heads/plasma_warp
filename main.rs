@@ -447,6 +447,25 @@ impl V3 {
     }
 }
 
+// Rotate a point by yaw (about Y), then pitch (about X), then roll (about Z).
+#[inline]
+fn rot3(p: V3, yaw: f32, pitch: f32, roll: f32) -> V3 {
+    let (cr, sr) = (roll.cos(), roll.sin());
+    let (x1, y1) = (p.x * cr - p.y * sr, p.x * sr + p.y * cr);
+    let (cp, sp) = (pitch.cos(), pitch.sin());
+    let (y2, z2) = (y1 * cp - p.z * sp, y1 * sp + p.z * cp);
+    let (cyw, syw) = (yaw.cos(), yaw.sin());
+    let (x3, z3) = (x1 * cyw + z2 * syw, -x1 * syw + z2 * cyw);
+    V3::new(x3, y2, z3)
+}
+
+// Stable per-cell pseudo-random in [0,1) from the cell index (no state).
+#[inline]
+fn hash01(i: usize, j: usize, salt: f32) -> f32 {
+    let v = ((i as f32 * 12.9898 + j as f32 * 78.233 + salt).sin() * 43758.5453).fract();
+    v.abs()
+}
+
 // Camera: eye at world origin looking down +Z. CAM_F is the focal length in
 // PIXELS. Setting CAM_F == CAM_D makes 1 world unit == 1 pixel at the quad
 // plane (Z == CAM_D) -- this is what lets the assembled quad reproduce a 2D
@@ -557,24 +576,16 @@ fn cyberpuzzle_grid() -> (usize, usize) {
 fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     let mut img = ImageBuffer::new(W as u32, H as u32);
     let mut depth = vec![f32::INFINITY; W * H];
-    // STAGE 2 TEST: the SAME single quad, now subdivided into an adjustable
-    // N x M grid of cells. Cells are coplanar and share edges exactly, so the
-    // result must match the un-subdivided render pixel for pixel -- no seams.
+    // STAGE 3: pieces fly in. Each cell carries a deterministic 3D offset
+    // (translation + rotation); ONE scaler s interpolates it from the flying
+    // state (s=1) to the exact assembled grid (s=0). No per-piece state.
     let (cols, rows) = cyberpuzzle_grid();
     let (qw, qh) = fit_letterbox(tex.w as f32, tex.h as f32);
     let center = V3::new(0.0, 0.0, CAM_D);
-    let yaw = st * 1.1;
-    let pitch = 0.45 * (st * 0.7).sin();
-    let roll = 0.25 * (st * 0.5).sin();
-    let (cy_, syw) = (yaw.cos(), yaw.sin());
-    let (cp_, spy) = (pitch.cos(), pitch.sin());
-    let (cr_, srl) = (roll.cos(), roll.sin());
-    let rot = |p: V3| -> V3 {
-        let (x1, y1) = (p.x * cr_ - p.y * srl, p.x * srl + p.y * cr_);
-        let (y2, z2) = (y1 * cp_ - p.z * spy, y1 * spy + p.z * cp_);
-        let (x3, z3) = (x1 * cy_ + z2 * syw, -x1 * syw + z2 * cy_);
-        V3::new(x3, y2, z3)
-    };
+    const FLY_SECS: f32 = 4.0;
+    let mut s = if st >= FLY_SECS { 0.0 } else { smooth(1.0 - st / FLY_SECS) };
+    // verification knob: force the assembly scaler (e.g. CYBERPUZZLE_FORCE_S=0)
+    if let Ok(v) = std::env::var("CYBERPUZZLE_FORCE_S") { if let Ok(f) = v.parse() { s = f; } }
     let tint_on = std::env::var_os("CYBERPUZZLE_TINT").is_some();
     let lx = |i: usize| -qw * 0.5 + qw * (i as f32) / (cols as f32);
     let ly = |j: usize|  qh * 0.5 - qh * (j as f32) / (rows as f32);
@@ -582,16 +593,30 @@ fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u
         for i in 0..cols {
             let (x0, x1) = (lx(i), lx(i + 1));
             let (y0, y1) = (ly(j), ly(j + 1));
-            let local = [
+            let base = [
                 V3::new(x0, y0, 0.0), // TL
                 V3::new(x1, y0, 0.0), // TR
                 V3::new(x1, y1, 0.0), // BR
                 V3::new(x0, y1, 0.0), // BL
             ];
+            // cell center in quad space (rotation pivot)
+            let cc = V3::new((x0 + x1) * 0.5, (y0 + y1) * 0.5, 0.0);
+            // deterministic per-cell flying offset
+            let dx = (hash01(i, j, 0.0) - 0.5) * 900.0;
+            let dy = (hash01(i, j, 1.0) - 0.5) * 700.0;
+            let dz = (0.35 + 0.65 * hash01(i, j, 2.0)) * 700.0; // start farther (smaller)
+            let ry = (hash01(i, j, 3.0) - 0.5) * 4.0;
+            let rp = (hash01(i, j, 4.0) - 0.5) * 4.0;
+            let rr = (hash01(i, j, 5.0) - 0.5) * 4.0;
             let mut corners = [V3::new(0.0, 0.0, 0.0); 4];
             for k in 0..4 {
-                let r = rot(local[k]);
-                corners[k] = V3::new(center.x + r.x, center.y + r.y, center.z + r.z);
+                let rel = base[k].sub(cc);                       // about cell center
+                let r = rot3(rel, ry * s, rp * s, rr * s);       // offset rotation
+                corners[k] = V3::new(
+                    center.x + cc.x + r.x + dx * s,
+                    center.y + cc.y + r.y + dy * s,
+                    center.z + cc.z + r.z + dz * s,
+                );
             }
             // uv: one shared texture across the whole grid -> tiles are literal
             // fragments of the image (uv slice per cell).
@@ -600,8 +625,7 @@ fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u
             let v0 = j as f32 / rows as f32;
             let v1 = (j + 1) as f32 / rows as f32;
             let uvs = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)];
-            // DEBUG: tint alternating cells so the grid is visible (proof the
-            // subdivision exists). CYBERPUZZLE_TINT=1. Off -> lam unchanged.
+            // DEBUG: tint alternating cells so the grid is visible. TINT=1.
             if tint_on {
                 let t = if (i + j) % 2 == 0 { 1.0 } else { 0.5 };
                 draw_textured_quad_tint(&mut img, &mut depth, tex, corners, uvs, t);
