@@ -708,25 +708,34 @@ fn frame_cyberpuzzle(tex: &Tex, back_tex: &Tex, st: f32, _gt: f32) -> ImageBuffe
     let mut depth = vec![f32::INFINITY; W * H];
     let (cols, rows) = cyberpuzzle_grid();
     let (qw, qh) = fit_letterbox(tex.w as f32, tex.h as f32);
-    let amp = cyberpuzzle_shape_amp();
+    let amp_base = cyberpuzzle_shape_amp();
+    let fly_dur = CYBERPUZZLE_FLY_DUR;
+    let stagger = CYBERPUZZLE_STAGGER_WINDOW;
+    // post-assembly timing: fly-in end -> hold -> 180-deg Y flip
+    let assembly_end = stagger + fly_dur;
+    let flip_start = assembly_end + CYBERPUZZLE_HOLD;
+    // Morph the irregular pieces back to perfect squares across the hold. This is
+    // INVISIBLE: the assembled planar image is invariant to in-plane interior
+    // -vertex displacement, and by assembly_end every piece has landed (s==0).
+    // Why bother: after morphing, each piece is a square centred on its cell, so
+    // the 180-deg Y flip maps it onto itself -> the reveal retiles with NO
+    // diagonal cracks (irregular shapes cannot flip onto themselves).
+    let morph = if st <= assembly_end { 0.0 }
+                else { smooth(((st - assembly_end) / (flip_start - assembly_end)).clamp(0.0, 1.0)) };
+    let amp = amp_base * (1.0 - morph);
     // ONE shared mesh; pieces are index windows into it, so shared boundary
     // vertices (and their uvs) are literally the same points -> watertight.
     let (vpos, vuv) = cyberpuzzle_vertices(cols, rows, qw, qh, amp);
     let vidx = |gi: usize, gj: usize| gj * (cols + 1) + gi;
     let center = V3::new(0.0, 0.0, CAM_D);
-    let fly_dur = CYBERPUZZLE_FLY_DUR;
-    let stagger = CYBERPUZZLE_STAGGER_WINDOW;
     let force_s: Option<f32> = std::env::var("CYBERPUZZLE_FORCE_S").ok().and_then(|v| v.parse().ok());
     let tint_on = std::env::var_os("CYBERPUZZLE_TINT").is_some();
     let spin_rate: f32 = std::env::var("CYBERPUZZLE_SPIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
     let spin = spin_rate * (st - (stagger + fly_dur)).max(0.0);
-    // --- post-assembly choreography: hold, then a 180-degree Y flip. The flip
-    // pivots on the SAME per-piece centroid as the tumble and lands coplanar
-    // again (a half-turn about Y keeps z and mirrors x). `reveal` enables
-    // two-sided texturing the instant the flip starts, so the back texture
-    // never peeks during the fly-in.
-    let assembly_end = stagger + fly_dur;
-    let flip_start = assembly_end + CYBERPUZZLE_HOLD;
+    // --- post-assembly choreography: the 180-degree Y flip. It pivots on the
+    // SAME per-piece centroid as the tumble and lands coplanar again (a half-
+    // turn about Y keeps z and mirrors x). `reveal` enables two-sided texturing
+    // the instant the flip starts, so the back never peeks during the fly-in.
     let flip_t = ((st - flip_start) / CYBERPUZZLE_FLIP_DUR).clamp(0.0, 1.0);
     let yaw = std::f32::consts::PI * smooth(flip_t);
     let reveal = st >= flip_start;
