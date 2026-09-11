@@ -678,12 +678,13 @@ const CYBERPUZZLE_SHAPE_AMP: f32 = 0.35; // fraction of min cell size; 0 = off
 // now, per wabunja.
 const HIHAT_DT: f32 = 0.2903;
 // DANCE: every piece sways on screen-X with sin(), one full -1..1 excursion per
-// hihat interval => period = 2*HIHAT_DT. Amplitude in screen px (1 world unit ==
-// 1 px at the quad plane). The SAME offset is applied to every piece, so shared
-// vertices stay welded and the whole mosaic swings as one rigid body -- no seams
-// can open. Gated to be zero during the fly-in (so the landing stays exact) and
-// phase-anchored at assembly_end (sin 0 there) so there is no jump on entry.
-const CYBERPUZZLE_DANCE_AMP: f32 = 16.0;
+// hihat interval => period = 2*HIHAT_DT. Amplitude is a FRACTION of the square
+// puzzle piece (cell) size, in world units (1 world unit == 1 px at the quad
+// plane). The SAME offset is applied to every piece, so shared vertices stay
+// welded and the whole mosaic swings as one rigid body -- no seams can open.
+// The swing runs at ALL times, including while pieces are still in the air.
+const CYBERPUZZLE_DANCE_FRAC: f32 = 0.2; // 1/5 of the square piece
+const CYBERPUZZLE_DANCE_AMP: f32 = -1.0; // absolute px override; <0 => use FRAC*cell
 
 fn cyberpuzzle_grid() -> (usize, usize) {
     let n = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
@@ -748,13 +749,15 @@ fn frame_cyberpuzzle(tex: &Tex, back_tex: &Tex, st: f32, _gt: f32) -> ImageBuffe
     let morph = if st <= assembly_end { 0.0 }
                 else { smooth(((st - assembly_end) / (flip_start - assembly_end)).clamp(0.0, 1.0)) };
     let amp = amp_base * (1.0 - morph);
-    // --- hihat swing: rigid screen-X sway of the assembled mosaic. Zero until
-    // the picture has landed; then a sin() whose half-period is one hihat.
+    // --- hihat swing: rigid screen-X sway of the WHOLE mosaic (same offset for
+    // every piece -> shared vertices stay welded, no seams). Runs at all times,
+    // fly-in included, so pieces swing even while airborne. Amplitude is a
+    // fraction (1/5) of the square piece (cell) unless an absolute override is set.
+    let cell = (qw / cols as f32).min(qh / rows as f32);
     let dance_amp: f32 = std::env::var("CYBERPUZZLE_DANCE_AMP").ok()
-        .and_then(|v| v.parse().ok()).unwrap_or(CYBERPUZZLE_DANCE_AMP);
-    let dance_w = smooth(((st - assembly_end) / 0.30).clamp(0.0, 1.0));
-    let dance_x = dance_amp * dance_w
-        * (std::f32::consts::PI * (st - assembly_end) / HIHAT_DT).sin();
+        .and_then(|v| v.parse().ok()).filter(|&v| v >= 0.0)
+        .unwrap_or(CYBERPUZZLE_DANCE_FRAC * cell);
+    let dance_x = dance_amp * (std::f32::consts::PI * st / HIHAT_DT).sin();
     // ONE shared mesh; pieces are index windows into it, so shared boundary
     // vertices (and their uvs) are literally the same points -> watertight.
     let (vpos, vuv) = cyberpuzzle_vertices(cols, rows, qw, qh, amp);
