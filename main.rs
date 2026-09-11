@@ -641,8 +641,11 @@ const CYBERPUZZLE_ORIGIN_JITTER: f32 = 240.0;
 // so the stream reads as dropping in from ABOVE instead of sliding along the
 // plane. The depth spread also keeps overlapping pieces on separate z during
 // flight, so the z-buffer resolves them instead of the surfaces fighting.
-const CYBERPUZZLE_ORIGIN_Z: f32 = 700.0;        // base depth offset, world units
-const CYBERPUZZLE_ORIGIN_Z_JITTER: f32 = 400.0; // hashed extra depth per piece
+// Signed depth offset of the launch point, world units. POSITIVE = pieces start
+// BEHIND the quad plane (they grow into place); NEGATIVE = start IN FRONT of it
+// (they recede into place). Flip the sign to switch which side they fly from.
+const CYBERPUZZLE_ORIGIN_Z: f32 = -450.0;       // NEGATIVE => launch IN FRONT of the plane
+const CYBERPUZZLE_ORIGIN_Z_JITTER: f32 = 300.0; // hashed extra depth per piece
 // Per-piece flight duration and the window over which launch times are spread.
 const CYBERPUZZLE_FLY_DUR: f32 = 1.7;
 // Front-loading of the flight curve: 0 = linear, larger = pieces fly faster off
@@ -780,8 +783,14 @@ fn frame_cyberpuzzle(tex: &Tex, back_tex: &Tex, st: f32, _gt: f32) -> ImageBuffe
             // screen px -> world at the quad plane (1 unit == 1 px at z=CAM_D)
             let ox_w = (ox_px - CX_PX) * CAM_D / CAM_F;
             let oy_w = (CY_PX - oy_px) * CAM_D / CAM_F;
-            let dz = origin_z                               // deep launch...
-                + hash01(i, j, 9.0) * CYBERPUZZLE_ORIGIN_Z_JITTER; // ...plus spread
+            // launch depth: CYBERPUZZLE_ORIGIN_Z carries the SIGN, so a negative
+            // value pulls the whole launch IN FRONT of the quad plane. Clamp the
+            // resulting launch z so a piece never reaches or crosses the eye
+            // plane (z<=0), where the projection blows up and the piece would
+            // vanish / invert. 1 world unit == 1 px at z==CAM_D.
+            let dz_want = origin_z + hash01(i, j, 9.0) * CYBERPUZZLE_ORIGIN_Z_JITTER;
+            let launch_z = (CAM_D + dz_want).clamp(140.0, 1.0e6);
+            let dz = launch_z - CAM_D;
             let dx = ox_w - cc.x;
             let dy = oy_w - cc.y;
             // per-piece tumble about a hashed axis + hashed turn count (< MAX),
