@@ -701,9 +701,11 @@ fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u
             let key = (kx + ky) * 0.5;                 // 0 lower-left .. 1 upper-right
             let launch = key * stagger;
             let e = ((st - launch) / fly_dur).clamp(0.0, 1.0); // elapsed fraction
-            let mut prog = 1.0 - e;                            // 1 -> 0 (drives spin)
-            let mut s = ease_out_expo(e, CYBERPUZZLE_EASE_K);  // 1 -> 0 (drives position)
-            if let Some(f) = force_s { s = f; prog = if f == 0.0 { 0.0 } else { 1.0 }; }
+            // ONE unified scaler drives BOTH position and spin, so a piece
+            // stops rotating the instant it reaches its cell (s==0). `turns`
+            // still independently sets HOW MANY rotations happen during flight.
+            let mut s = ease_out_expo(e, CYBERPUZZLE_EASE_K);  // 1 -> 0
+            if let Some(f) = force_s { s = f; }
             // pivot = centroid of the (displaced) piece
             let cc = V3::new(
                 (base[0].x + base[1].x + base[2].x + base[3].x) * 0.25,
@@ -729,7 +731,7 @@ fn frame_cyberpuzzle(tex: &Tex, st: f32, _gt: f32) -> ImageBuffer<Rgb<u8>, Vec<u
             let tilt = (hash01(i, j, 6.0) - 0.5) * 2.0;          // radians
             let turns = CYBERPUZZLE_MIN_TURNS
                 + (CYBERPUZZLE_MAX_TURNS - CYBERPUZZLE_MIN_TURNS) * hash01(i, j, 10.0);
-            let ang = (turns * std::f32::consts::TAU + tilt) * prog;
+            let ang = (turns * std::f32::consts::TAU + tilt) * s;
             let mut corners = [V3::new(0.0, 0.0, 0.0); 4];
             for k in 0..4 {
                 let rel = base[k].sub(cc);                       // about piece centroid
