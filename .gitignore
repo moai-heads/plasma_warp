@@ -28,5 +28,6 @@ sync_verification.png
 *.mov
 *.avi
 *.mkv
+.idea
 
 # ---- sync data IS tracked (hand-labelled onsets): beats.txt / kicks.txt ----
