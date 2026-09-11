@@ -17,6 +17,23 @@ enum Scene {
     CyberPuzzle, // skeleton: effect not implemented yet
 }
 
+// Which hand-labelled channel drives a scene's punch. Enum (project
+// convention) so channels can be A/B-swapped for testing without code churn.
+#[derive(Clone, Copy, PartialEq)]
+enum SyncCh { Snare, Kick }
+
+// Scene 1 punch source (default). Override for A/B renders with the env var
+// PLASMA_ROTOZOOM_SYNC=snare|kick -- see rotozoom_channel().
+const ROTOZOOM_SYNC: SyncCh = SyncCh::Kick;
+
+fn rotozoom_channel() -> SyncCh {
+    match std::env::var("PLASMA_ROTOZOOM_SYNC").ok().as_deref() {
+        Some("snare") => SyncCh::Snare,
+        Some("kick") => SyncCh::Kick,
+        _ => ROTOZOOM_SYNC,
+    }
+}
+
 // ---------------- Beat sync system (hand-labelled ground truth) ----------------
 // Both channels are HAND-LABELLED in Audacity (label tracks, exported as plain
 // text) and committed. No onset detection exists anywhere in this project --
@@ -545,7 +562,13 @@ fn frame_for(scene: Scene, texs: &[&Tex; 3], blurs: &[&Tex; 3],
     -> ImageBuffer<Rgb<u8>, Vec<u8>>
 {
     match scene {
-        Scene::Rotozoom => frame_rotozoom(texs[t0], blurs[t0], texs[t1], blurs[t1], gt, mix, punch),
+        Scene::Rotozoom => {
+            let p = match rotozoom_channel() {
+                SyncCh::Snare => punch,                // snare impulse
+                SyncCh::Kick => beat.punch_kick(gt),   // kick impulse
+            };
+            frame_rotozoom(texs[t0], blurs[t0], texs[t1], blurs[t1], gt, mix, p)
+        }
         Scene::TriangleDance => frame_tri(texs[2], blurs[2], st, gt, punch, beat.punch_kick(gt), beat), // blue bg; mesh=snare, bg=kick
         Scene::CyberPuzzle => frame_skeleton(st, gt), // placeholder until the effect lands
     }
