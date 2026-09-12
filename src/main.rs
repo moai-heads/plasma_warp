@@ -862,6 +862,126 @@ fn draw_laser_beams(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, st: f32) {
     }
 }
 
+// ---- background mesh pyramids ----------------------------------------------
+// Wireframe 4-sided pyramids that drift RIGHT -> LEFT across the background and
+// spin about their own origin in 3D. Every property (depth, size, speed, height,
+// tumble rates, colour, brightness, phase) is HASHED from the pyramid's index,
+// so the whole field is deterministic and render-reproducible (no wall-clock
+// RNG), exactly like the laser beams. Colours are red / orange; the wires are
+// blended ADDITIVELY over the black background so they read as glowing neon.
+//
+// LOOPING: a pyramid's world-x is `half_span - (speed*t + phase) mod 2*half_span`
+// with `half_span` wide enough to carry it from just OFF the right edge to just
+// OFF the left edge. So when it reaches the left it wraps to the right and then
+// slides back IN gradually (it enters from beyond the right edge, it does not
+// pop in mid-screen).
+const BG_PYRAMID_COUNT: usize = 14;
+const BG_PYRAMID_MIN_RADIUS: f32 = 22.0;   // apparent radius on screen, px
+const BG_PYRAMID_MAX_RADIUS: f32 = 68.0;
+const BG_PYRAMID_MIN_SPEED: f32 = 55.0;    // screen px / second, right -> left
+const BG_PYRAMID_MAX_SPEED: f32 = 205.0;
+const BG_PYRAMID_DEPTH_MIN: f32 = 250.0;   // world units BEHIND the quad plane
+const BG_PYRAMID_DEPTH_MAX: f32 = 1650.0;
+const TAU: f32 = std::f32::consts::TAU;
+
+// One additive pixel write (clamped). Kept separate so the wire glow can call it
+// for the core pixel and for its soft neighbours.
+#[inline]
+fn blend_pixel_additive(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, x: i32, y: i32, color: [f32; 3], weight: f32) {
+    if x < 0 || y < 0 || x >= W as i32 || y >= H as i32 { return; }
+    let p = img.get_pixel(x as u32, y as u32);
+    let r = (p[0] as f32 + color[0] * weight).min(255.0) as u8;
+    let g = (p[1] as f32 + color[1] * weight).min(255.0) as u8;
+    let b = (p[2] as f32 + color[2] * weight).min(255.0) as u8;
+    img.put_pixel(x as u32, y as u32, Rgb([r, g, b]));
+}
+
+// Additive line with a small soft glow: the core pixel gets full weight, the
+// four edge-neighbours and four corners get progressively less. That soft falloff
+// is what makes a 1px wire read as a glowing neon line instead of an alias fest.
+fn draw_line_additive(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
+                      x0: f32, y0: f32, x1: f32, y1: f32,
+                      color: [f32; 3], gain: f32) {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let n = dx.abs().max(dy.abs()).ceil().max(1.0) as i32;
+    for i in 0..=n {
+        let f = i as f32 / n as f32;
+        let xi = (x0 + dx * f).round() as i32;
+        let yi = (y0 + dy * f).round() as i32;
+        blend_pixel_additive(img, xi, yi, color, gain);
+        blend_pixel_additive(img, xi + 1, yi, color, gain * 0.30);
+        blend_pixel_additive(img, xi - 1, yi, color, gain * 0.30);
+        blend_pixel_additive(img, xi, yi + 1, color, gain * 0.30);
+        blend_pixel_additive(img, xi, yi - 1, color, gain * 0.30);
+        blend_pixel_additive(img, xi + 1, yi + 1, color, gain * 0.12);
+        blend_pixel_additive(img, xi - 1, yi + 1, color, gain * 0.12);
+        blend_pixel_additive(img, xi + 1, yi - 1, color, gain * 0.12);
+        blend_pixel_additive(img, xi - 1, yi - 1, color, gain * 0.12);
+    }
+}
+
+fn draw_background_pyramids(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, t: f32) {
+    if t < 0.0 { return; }
+    // local-space pyramid: apex on top, square base at the bottom (half-extent 1)
+    let local = [
+        (0.0f32, 1.15f32, 0.0f32),
+        (1.0, -0.75, 1.0),
+        (-1.0, -0.75, 1.0),
+        (-1.0, -0.75, -1.0),
+        (1.0, -0.75, -1.0),
+    ];
+    let edges = [(0usize, 1usize), (0, 2), (0, 3), (0, 4), (1, 2), (2, 3), (3, 4), (4, 1)];
+    for k in 0..BG_PYRAMID_COUNT {
+        let s = k;
+        // depth behind the quad plane; `persp` converts this depth's world units
+        // to screen px (1 world unit == 1 px only AT the quad plane, CAM_D).
+        let z = CAM_D + BG_PYRAMID_DEPTH_MIN
+            + (BG_PYRAMID_DEPTH_MAX - BG_PYRAMID_DEPTH_MIN) * hash01(s, 0, 31.0);
+        let persp = z / CAM_F;
+        // hashed apparent radius + horizontal speed
+        let radius = BG_PYRAMID_MIN_RADIUS
+            + (BG_PYRAMID_MAX_RADIUS - BG_PYRAMID_MIN_RADIUS) * hash01(s, 0, 32.0);
+        let speed = BG_PYRAMID_MIN_SPEED
+            + (BG_PYRAMID_MAX_SPEED - BG_PYRAMID_MIN_SPEED) * hash01(s, 0, 33.0);
+        // hashed screen height -> world y (screen y maps to world y exactly here)
+        let screen_y = (0.12 + 0.76 * hash01(s, 0, 34.0)) * H as f32;
+        let world_y = (CY_PX - screen_y) * persp;
+        // horizontal loop span: from just off the RIGHT edge to just off the LEFT
+        let half_span_px = 0.5 * W as f32 + radius + 60.0;
+        let half_span = half_span_px * persp;
+        let phase = hash01(s, 0, 35.0) * 2.0 * half_span;
+        let travel = (speed * persp * t + phase).rem_euclid(2.0 * half_span);
+        let world_x = half_span - travel;            // right -> left, wraps at the left edge
+        // world size chosen so the pyramid's apparent radius equals `radius` px
+        let world_scale = radius * persp / 1.4;
+        // 3D tumble about the pyramid's own origin (yaw/pitch/roll share the hash)
+        let spin_sign = if hash01(s, 0, 40.0) < 0.5 { 1.0 } else { -1.0 };
+        let yaw = spin_sign * (0.5 + 0.9 * hash01(s, 0, 36.0)) * t + hash01(s, 0, 37.0) * TAU;
+        let pitch = (0.4 + 0.9 * hash01(s, 0, 38.0)) * t + hash01(s, 0, 39.0) * TAU;
+        let roll = 0.6 * hash01(s, 0, 41.0) * t;
+        // colour: red or orange, hashed per pyramid
+        let color = if hash01(s, 0, 42.0) < 0.5 {
+            [238.0, 28.0, 16.0]      // red
+        } else {
+            [255.0, 122.0, 22.0]     // orange
+        };
+        let gain = 0.55 + 0.35 * hash01(s, 0, 43.0);
+        let mut projected = [(0.0f32, 0.0f32); 5];
+        for v in 0..5 {
+            let (lx, ly, lz) = local[v];
+            let rotated = rot3(V3::new(lx * world_scale, ly * world_scale, lz * world_scale), yaw, pitch, roll);
+            let world = V3::new(world_x + rotated.x, world_y + rotated.y, z + rotated.z);
+            let (sx, sy, _invz) = project(world);
+            projected[v] = (sx, sy);
+        }
+        for &(a, b) in &edges {
+            draw_line_additive(img, projected[a].0, projected[a].1,
+                               projected[b].0, projected[b].1, color, gain);
+        }
+    }
+}
+
 // Fill everything OUTSIDE the puzzle's screen-space rectangle with opaque black,
 // so background elements (the laser beams) are never visible "past" the mosaic.
 // The camera therefore sees only the puzzle rectangle and pure black around it.
@@ -972,7 +1092,9 @@ fn frame_cyberpuzzle(bump: &Bump, img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth
     // once the 180-degree flip is COMPLETE: `beam_local` is 0 at flip_end and may
     // go negative before that, in which case no beam spawns (guarded in k>=0).
     let beam_start = flip_start + CYBERPUZZLE_FLIP_DUR;
-    draw_laser_beams(img, st - beam_start);
+    let background_local = st - beam_start; // <= 0 before the flip completes
+    draw_laser_beams(img, background_local);
+    draw_background_pyramids(img, background_local);
     // occlude the letterbox margins so no beam is visible past the puzzle
     // (tracks the hihat sway so it stays flush with the mosaic's edge)
     fill_surround_black(img, dance_x, qw * 0.5);
