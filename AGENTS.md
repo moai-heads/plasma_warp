@@ -105,3 +105,12 @@ format conservatively up front: keep fences short and self-contained.
   loads `meltdown_beat.ogg` and loops it. No hand-rolled PCM/lewton path.
 - Requires the `sdl3_mixer` system dev package (plus SDL3). The headless dumper
   build (`--no-default-features`) needs neither.
+
+## 9. Git workflow — ALWAYS push
+- **Every new commit MUST be pushed to `origin` (`https://github.com/moai-heads/plasma_warp.git`,
+  branch `master`) in the same session it is made.** Do not leave commits local-only.
+- Verify after pushing: `git status -sb` shows no `ahead` and `git ls-remote origin master`
+  matches local `HEAD`.
+- If `git push` fails auth, run `gh auth setup-git` first (git's credential helper must be
+  wired to the `gh` CLI), then retry.
+- Media assets are NEVER pushed (see §7b) — verify the object store before every push.

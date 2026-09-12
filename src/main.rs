@@ -597,6 +597,38 @@ fn fit_letterbox(tw: f32, th: f32) -> (f32, f32) {
     (tw * s, th * s)
 }
 
+// Near-plane guard (view space, world units along the +Z view axis). The eye is
+// at z=0; z<=0 makes the perspective divide blow up / invert the piece. Under
+// the current constants nothing gets near it (launch z is clamped >= 140 and a
+// rotated corner reaches at most ~50), so this clip is DORMANT insurance: it
+// only fires if future content drives geometry toward the eye. Kept well below
+// the 140 launch floor so it can never touch the assembled plane's exact output.
+const NEAR_Z: f32 = 40.0;
+
+// Sutherland-Hodgman clip of a polygon against the single near plane z >= NEAR_Z.
+// Each vertex carries (x,y,z,u,v); vertices created by the cut linearly
+// interpolate ALL attributes (so UVs stay correct on the new edge). Returns the
+// surviving polygon (0..=previous_len+1 vertices). A polygon already in front of
+// the plane passes through unchanged, vertex-for-vertex.
+fn clip_poly_near(poly: &[[f32; 5]]) -> Vec<[f32; 5]> {
+    let mut out: Vec<[f32; 5]> = Vec::with_capacity(poly.len() + 2);
+    let n = poly.len();
+    for i in 0..n {
+        let a = poly[i];
+        let b = poly[(i + 1) % n];
+        let a_in = a[2] >= NEAR_Z;
+        let b_in = b[2] >= NEAR_Z;
+        if a_in { out.push(a); }
+        if a_in != b_in {                       // edge crosses the plane: add cut point
+            let t = (NEAR_Z - a[2]) / (b[2] - a[2]);
+            let mut q = [0.0f32; 5];
+            for k in 0..5 { q[k] = a[k] + t * (b[k] - a[k]); }
+            out.push(q);
+        }
+    }
+    out
+}
+
 // Draw one textured quad (two triangles). Corners in world space, order
 // [TL, TR, BR, BL]; uvs likewise. Flat lambert per face, two-sided (see LIGHT).
 //
@@ -641,19 +673,27 @@ fn draw_textured_quad_tint(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut 
         eprintln!("LIGHTDBG n=({:.3},{:.3},{:.3}) n.L={:.4} lam_raw={:.6} front={} flip_u={}",
                   n.x, n.y, n.z, n.dot(LIGHT), raw, front_facing, flip_u);
     }
-    let mut sx = [0.0f32; 4];
-    let mut sy = [0.0f32; 4];
-    let mut invz = [0.0f32; 4];
-    for i in 0..4 {
-        let (a, b, iz) = project(c[i]);
-        sx[i] = a; sy[i] = b; invz[i] = iz;
-    }
-    for &(a, b, cc) in &[(0usize, 1usize, 2usize), (0, 2, 3)] {
-        raster_tex_tri(img, depth,
-                       [sx[a], sx[b], sx[cc]], [sy[a], sy[b], sy[cc]],
-                       [uvs[a].0, uvs[b].0, uvs[cc].0],
-                       [uvs[a].1, uvs[b].1, uvs[cc].1],
-                       [invz[a], invz[b], invz[cc]], pick, lam);
+    // Assemble the quad as (x,y,z,u,v), clip against the near plane, then
+    // fan-triangulate whatever polygon survives. When nothing is clipped (the
+    // normal case) the fan yields exactly triangles (0,1,2) and (0,2,3) with the
+    // same projected corners as before -> byte-identical output.
+    let quad: Vec<[f32; 5]> = (0..4)
+        .map(|i| [c[i].x, c[i].y, c[i].z, uvs[i].0, uvs[i].1])
+        .collect();
+    let poly = clip_poly_near(&quad);
+    for ti in 1..poly.len().saturating_sub(1) {
+        let vs = [poly[0], poly[ti], poly[ti + 1]];
+        let mut sx = [0.0f32; 3];
+        let mut sy = [0.0f32; 3];
+        let mut invz = [0.0f32; 3];
+        let mut tu = [0.0f32; 3];
+        let mut tv = [0.0f32; 3];
+        for k in 0..3 {
+            let (a, b, iz) = project(V3::new(vs[k][0], vs[k][1], vs[k][2]));
+            sx[k] = a; sy[k] = b; invz[k] = iz;
+            tu[k] = vs[k][3]; tv[k] = vs[k][4];
+        }
+        raster_tex_tri(img, depth, sx, sy, tu, tv, invz, pick, lam);
     }
 }
 
