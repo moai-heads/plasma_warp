@@ -228,6 +228,15 @@ format conservatively up front: keep fences short and self-contained.
   (`st - beam_start`) to `draw_laser_beams`, which returns early (no spawn, k<0
   guard) while that is negative. So no beam is drawn during the fly-in, assembly,
   jiggle, or the flip itself.
+- The letterbox margins (the black bars left/right of the mosaic) are OCCLUDED
+  with opaque black by `fill_surround_black`, called AFTER the beams and BEFORE
+  the pieces, so no beam is ever visible "past" the puzzle: the camera sees only
+  the mosaic rectangle and pure black around it. The rectangle TRACKS the hihat
+  sway (`dance_x`) so it stays flush with the mosaic's moving edge — a static
+  rectangle would leak a beam sliver on one side or shave the puzzle on the
+  other. World->screen is 1:1 at the quad depth (CAM_F == CAM_D), so the edge is
+  `CX_PX + dance_x +/- qw/2`; edges are rounded outward to the rasterizer's
+  pixel-center convention.
 - The beams live BEHIND the puzzle: the pieces depth-test in front of them
   (§12), and where the revealed back texture is cut out (§14) the beams show
   through. They are also visible in the black letterbox margins on each side.

@@ -862,6 +862,39 @@ fn draw_laser_beams(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, st: f32) {
     }
 }
 
+// Fill everything OUTSIDE the puzzle's screen-space rectangle with opaque black,
+// so background elements (the laser beams) are never visible "past" the mosaic.
+// The camera therefore sees only the puzzle rectangle and pure black around it.
+//
+// The mosaic sways horizontally by `center_x_offset` (the hihat swing), so the
+// rectangle is tracked to stay flush with the puzzle's MOVING edge; a static
+// rectangle would either reveal a beam sliver on one side or shave the puzzle
+// on the other. World->screen is 1:1 here (CAM_F == CAM_D at the quad depth), so
+// the edge is just `CX_PX + center_x_offset +/- half_width`.
+//
+// Called AFTER the beams and BEFORE the pieces: it occludes the beams, then the
+// pieces (which all lie inside the rectangle) draw on top undisturbed. The
+// half-pixel edge is rounded OUTWARD (left edge up, right edge down) to match
+// the rasterizer's pixel-CENTER inside test, so no beam pixel can survive.
+fn fill_surround_black(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
+                       center_x_offset: f32, half_width: f32) {
+    let rect_left = CX_PX + center_x_offset - half_width;
+    let rect_right = CX_PX + center_x_offset + half_width;
+    let left_end = rect_left.ceil().max(0.0) as u32;               // black x < left_end
+    let right_start = (rect_right.floor().min(W as f32)).max(0.0) as u32; // black x >= right_start
+    let black = Rgb([0u8, 0u8, 0u8]);
+    if left_end > 0 {
+        for y in 0..H as u32 {
+            for x in 0..left_end.min(W as u32) { img.put_pixel(x, y, black); }
+        }
+    }
+    if right_start < W as u32 {
+        for y in 0..H as u32 {
+            for x in right_start..W as u32 { img.put_pixel(x, y, black); }
+        }
+    }
+}
+
 fn frame_cyberpuzzle(bump: &Bump, img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
                      tex: &Tex, back_tex: &Tex, st: f32, _gt: f32, beat: &BeatSync) {
     clear_image(img);
@@ -940,6 +973,9 @@ fn frame_cyberpuzzle(bump: &Bump, img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth
     // go negative before that, in which case no beam spawns (guarded in k>=0).
     let beam_start = flip_start + CYBERPUZZLE_FLIP_DUR;
     draw_laser_beams(img, st - beam_start);
+    // occlude the letterbox margins so no beam is visible past the puzzle
+    // (tracks the hihat sway so it stays flush with the mosaic's edge)
+    fill_surround_black(img, dance_x, qw * 0.5);
     for j in 0..rows {
         for i in 0..cols {
             // the piece's four SHARED corners, in [TL, TR, BR, BL] order
