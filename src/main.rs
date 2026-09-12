@@ -234,10 +234,9 @@ fn rotozoom_uv(gx: f32, gy: f32, t: f32, punch: f32) -> (f32, f32) {
     (u, v)
 }
 
-fn frame_rotozoom(t: &Tex, tb: &Tex, nt: &Tex, nb: &Tex, gt: f32, mix: f32, punch: f32)
-    -> ImageBuffer<Rgb<u8>, Vec<u8>>
+fn frame_rotozoom(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
+                  t: &Tex, tb: &Tex, nt: &Tex, nb: &Tex, gt: f32, mix: f32, punch: f32)
 {
-    let mut img = ImageBuffer::new(W as u32, H as u32);
     let glow = 0.6 + 0.4 * (gt * 0.8).sin();
     for y in 0..H {
         for x in 0..W {
@@ -261,7 +260,6 @@ fn frame_rotozoom(t: &Tex, tb: &Tex, nt: &Tex, nb: &Tex, gt: f32, mix: f32, punc
                 Rgb([out[0].clamp(0.0, 255.0) as u8, out[1].clamp(0.0, 255.0) as u8, out[2].clamp(0.0, 255.0) as u8]));
         }
     }
-    img
 }
 
 // ---------------- Scene: TriangleDance ----------------
@@ -342,7 +340,7 @@ fn sample_bg(img: &ImageBuffer<Rgb<u8>, Vec<u8>>, x: i32, y: i32, dx: f32, dy: f
 
 // offset: per-face refraction shift in pixels (0.0 for Solid). chroma spreads R/G/B.
 #[allow(clippy::too_many_arguments)]
-fn fill_tri_flat(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut Vec<f32>,
+fn fill_tri_flat(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
                  p: [(f32, f32); 3], dz: [f32; 3],
                  surface: Surface, lam: f32,
                  off: (f32, f32), chroma: f32,
@@ -403,7 +401,7 @@ fn fill_tri_flat(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut Vec<f32>,
 // opaque flat-shaded Solid faces. refract=true: transparent refracting glass
 // with green emissive, additive blend.
 #[allow(clippy::too_many_arguments)]
-fn draw_pyramid(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut Vec<f32>,
+fn draw_pyramid(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
                 cx: f32, cy: f32, yaw: f32, pitch: f32, scale: f32,
                 alpha: f32, punch: f32, refract: bool) {
     const PUNCH_MODE: MeshPunch = MeshPunch::SolidColor;
@@ -826,9 +824,10 @@ fn cyberpuzzle_vertices(cols: usize, rows: usize, qw: f32, qh: f32, amp: f32)
     (pos, uv)
 }
 
-fn frame_cyberpuzzle(tex: &Tex, back_tex: &Tex, st: f32, _gt: f32, beat: &BeatSync) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
-    let mut img = ImageBuffer::new(W as u32, H as u32);
-    let mut depth = vec![f32::INFINITY; W * H];
+fn frame_cyberpuzzle(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
+                     tex: &Tex, back_tex: &Tex, st: f32, _gt: f32, beat: &BeatSync) {
+    clear_image(img);
+    depth.fill(f32::INFINITY);
     let (cols, rows) = cyberpuzzle_grid();
     let (qw, qh) = fit_letterbox(tex.w as f32, tex.h as f32);
     let amp_base = cyberpuzzle_shape_amp();
@@ -967,16 +966,18 @@ fn frame_cyberpuzzle(tex: &Tex, back_tex: &Tex, st: f32, _gt: f32, beat: &BeatSy
             // DEBUG: tint alternating cells so the grid is visible. TINT=1.
             if tint_on {
                 let t = if (i + j) % 2 == 0 { 1.0 } else { 0.5 };
-                draw_textured_quad_tint(&mut img, &mut depth, tex, back, corners, uvs, t);
+                draw_textured_quad_tint(img, depth, tex, back, corners, uvs, t);
             } else {
-                draw_textured_quad(&mut img, &mut depth, tex, back, corners, uvs);
+                draw_textured_quad(img, depth, tex, back, corners, uvs);
             }
         }
     }
-    img
 }
 
-fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, kick: f32, beat: &BeatSync) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+fn frame_tri(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
+             ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, kick: f32, beat: &BeatSync) {
+    clear_image(img);
+    depth.fill(f32::INFINITY);
     // scene-local snare schedule: global beats mapped into scene time (mod song span)
     let start: f32 = 16.0; // scene 2 begins at demo t=16s
     let mut ls: Vec<f32> = beat.beats.iter().map(|&b| (b - start).rem_euclid(beat.span)).collect();
@@ -994,7 +995,6 @@ fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, kick: f32, beat: 
     let t_wave = t_x - SHARD_T;
     let wave_amp = if t_wave > 0.0 { smooth((t_wave / 0.5).min(1.0)) } else { 0.0 };
     let fade_k = if t_wave > 0.0 { 1.0 - smooth((t_wave / 1.2).min(1.0)) } else { 1.0 };
-    let mut img = ImageBuffer::new(W as u32, H as u32);
     // background: blurred blue texture drawn ONCE, centered (cover-fit), no wrap.
     // outside its rect = black. subtle wobble on the sampling uv (clamped).
     let ar_t = tb.w as f32 / tb.h as f32;
@@ -1060,7 +1060,6 @@ fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, kick: f32, beat: 
         }
     }
     let (cx0, cy0) = (W as f32 * 0.5, H as f32 * 0.52);
-    let mut depth = vec![f32::INFINITY; W * H];
     const SHARDS: usize = 9;
     // whole mesh: drop -> 4 opaque syncs -> transparent refract glass
     if st >= drop_t && t_x < 0.0 {
@@ -1076,7 +1075,7 @@ fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, kick: f32, beat: 
         // mesh rides the SNARE channel (punch): scale pop + (while opaque) the
         // SolidColor tint flash. bg keeps the kick channel, so the two layers
         // now have independent rhythms again -- snare = mesh, kick = bg.
-        draw_pyramid(&mut img, &mut depth, cx0, cy, yaw, pitch,
+        draw_pyramid(img, depth, cx0, cy, yaw, pitch,
                      H as f32 * (0.55 + 0.06 * (gt * 0.8).sin()), mesh_alpha, punch, refract);
     } else if t_x >= 0.0 {
         // explosion: shards = small transparent refracting pyramids flying
@@ -1094,30 +1093,33 @@ fn frame_tri(ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, kick: f32, beat: 
                 let yaw = gt * 1.7 + fi * 1.3;
                 let pitch = 0.45 + 0.3 * (gt * 0.7 + fi).sin();
                 let s = H as f32 * 0.55 * (0.13 + 0.05 * fr2) * (1.0 + punch);
-                draw_pyramid(&mut img, &mut depth, x, y, yaw, pitch, s, 0.5, punch, true);
+                draw_pyramid(img, depth, x, y, yaw, pitch, s, 0.5, punch, true);
             }
         }
     }
-    if fade_k < 1.0 { fade(&mut img, fade_k); }
-    img
+    if fade_k < 1.0 { fade(img, fade_k); }
 }
 
 // ---------------- Scene dispatch ----------------
 
-fn frame_for(scene: Scene, texs: &[&Tex; 5], blurs: &[&Tex; 5],
+fn frame_for(fb: &mut FrameBuffers, slot: BufferSlot, scene: Scene,
+             texs: &[&Tex; 5], blurs: &[&Tex; 5],
              t0: usize, t1: usize, st: f32, gt: f32, mix: f32, punch: f32, beat: &BeatSync)
-    -> ImageBuffer<Rgb<u8>, Vec<u8>>
 {
+    let img = match slot {
+        BufferSlot::Primary => &mut fb.image,
+        BufferSlot::Scratch => &mut fb.scratch,
+    };
     match scene {
         Scene::Rotozoom => {
             let p = match rotozoom_channel() {
                 SyncCh::Snare => punch,                // snare impulse
                 SyncCh::Kick => beat.punch_kick(gt),   // kick impulse
             };
-            frame_rotozoom(texs[t0], blurs[t0], texs[t1], blurs[t1], gt, mix, p)
+            frame_rotozoom(img, texs[t0], blurs[t0], texs[t1], blurs[t1], gt, mix, p)
         }
-        Scene::TriangleDance => frame_tri(texs[2], blurs[2], st, gt, punch, beat.punch_kick(gt), beat), // blue bg; mesh=snare, bg=kick
-        Scene::CyberPuzzle => frame_cyberpuzzle(texs[3], texs[4], st, gt, beat), // front=tex_scene3, back=tex_scene4
+        Scene::TriangleDance => frame_tri(img, &mut fb.depth, texs[2], blurs[2], st, gt, punch, beat.punch_kick(gt), beat), // blue bg; mesh=snare, bg=kick
+        Scene::CyberPuzzle => frame_cyberpuzzle(img, &mut fb.depth, texs[3], texs[4], st, gt, beat), // front=tex_scene3, back=tex_scene4
     }
 }
 
@@ -1185,6 +1187,31 @@ impl SceneData {
     }
 }
 
+// Reusable per-frame scratch buffers, owned OUTSIDE the render loops and passed
+// down by &mut, so no ImageBuffer/Vec is allocated per frame. `image` is the
+// frame being built; `scratch` holds the second full frame the loop-wrap
+// cross-fade mixes in; `depth` is the shared z-buffer. Cleared per frame (not
+// reallocated) by the scene renderers.
+struct FrameBuffers {
+    image: ImageBuffer<Rgb<u8>, Vec<u8>>,
+    scratch: ImageBuffer<Rgb<u8>, Vec<u8>>,
+    depth: Vec<f32>,
+}
+impl FrameBuffers {
+    fn new() -> Self {
+        FrameBuffers {
+            image: ImageBuffer::new(W as u32, H as u32),
+            scratch: ImageBuffer::new(W as u32, H as u32),
+            depth: vec![f32::INFINITY; W * H],
+        }
+    }
+}
+
+// Which image slot a scene renders into. Primary = the frame we keep and save;
+// Scratch = the throwaway second frame for the loop-wrap cross-fade.
+#[derive(Clone, Copy)]
+enum BufferSlot { Primary, Scratch }
+
 // Which texture slot pair a scene cross-fades between.
 fn scene_segs(scene: Scene) -> [usize; 2] {
     match scene {
@@ -1199,8 +1226,7 @@ fn scene_segs(scene: Scene) -> [usize; 2] {
 // scene math and handoff fades, but driven by wall-clock time instead of a
 // frame counter.
 #[allow(dead_code)]
-fn timeline_frame(sd: &SceneData, texs: &[&Tex; 5], blurs: &[&Tex; 5], t: f32)
-    -> ImageBuffer<Rgb<u8>, Vec<u8>>
+fn timeline_frame(fb: &mut FrameBuffers, sd: &SceneData, texs: &[&Tex; 5], blurs: &[&Tex; 5], t: f32)
 {
     let total: f32 = sd.timeline.last().map(|(_, s, d)| s + d).unwrap_or(SEG_SECS).max(0.001);
     let t = t.rem_euclid(total);
@@ -1217,20 +1243,19 @@ fn timeline_frame(sd: &SceneData, texs: &[&Tex; 5], blurs: &[&Tex; 5], t: f32)
     let segs = scene_segs(scene);
     let (t0, t1) = (segs[sj], segs[1 - sj]);
     let punch = sd.beat.punch(gt);
-    let mut frame = frame_for(scene, texs, blurs, t0, t1, st, gt, tex_mix, punch, &sd.beat);
-    if gt < FADE_SECS { fade(&mut frame, smooth(gt / FADE_SECS)); }
+    frame_for(fb, BufferSlot::Primary, scene, texs, blurs, t0, t1, st, gt, tex_mix, punch, &sd.beat);
+    if gt < FADE_SECS { fade(&mut fb.image, smooth(gt / FADE_SECS)); }
     match scene {
         Scene::Rotozoom => {
             if st > dur - FADE_SECS {
-                fade(&mut frame, 1.0 - smooth((st - (dur - FADE_SECS)) / FADE_SECS));
+                fade(&mut fb.image, 1.0 - smooth((st - (dur - FADE_SECS)) / FADE_SECS));
             }
         }
         Scene::TriangleDance => {
-            if st < FADE_SECS { fade(&mut frame, smooth(st / FADE_SECS)); }
+            if st < FADE_SECS { fade(&mut fb.image, smooth(st / FADE_SECS)); }
         }
         Scene::CyberPuzzle => {}
     }
-    frame
 }
 
 // Render one timeline entry (headless frame dumper): `start` = demo-timeline
@@ -1250,6 +1275,7 @@ fn render_range(scene: Scene, start: f32, dur: f32,
     let total = (dur * FPS as f32) as usize;
     let mut idx = idx0;
     let mut f = 0usize;
+    let mut fb = FrameBuffers::new();
     while f < total {
         let sj = if show > 0 { (f / show).min(1) } else { 0 };
         let fl = f % show;
@@ -1261,34 +1287,34 @@ fn render_range(scene: Scene, start: f32, dur: f32,
         let t0 = segs[sj];
         let t1 = segs[1 - sj];
         let punch = beat.punch(gt);
-        let mut frame = frame_for(scene, texs, blurs, t0, t1, st, gt, tex_mix, punch, beat);
+        frame_for(&mut fb, BufferSlot::Primary, scene, texs, blurs, t0, t1, st, gt, tex_mix, punch, beat);
 
         // global demo fade-in from black (entry that opens the demo)
         if demo_fade_in && gt < FADE_SECS {
-            fade(&mut frame, smooth(gt / FADE_SECS));
+            fade(&mut fb.image, smooth(gt / FADE_SECS));
         }
         match scene {
             Scene::Rotozoom => {
                 if fade_out && f >= total - d {
                     let k = smooth((f - (total - d)) as f32 / d as f32);
-                    fade(&mut frame, 1.0 - k);
+                    fade(&mut fb.image, 1.0 - k);
                 }
             }
             Scene::TriangleDance => {
                 // scene always starts black (after handoff in demo, clean in dev):
                 // fade in over first FADE_SECS, identical ramp to the demo fade-in
                 if st < FADE_SECS {
-                    fade(&mut frame, smooth(st / FADE_SECS));
+                    fade(&mut fb.image, smooth(st / FADE_SECS));
                 }
                 if wrap && f >= total - d {
                     let k = smooth((f - (total - d)) as f32 / d as f32);
-                    let nf = frame_for(Scene::Rotozoom, texs, blurs, 0, 1, st, gt, 0.0, beat.punch(gt), beat);
-                    mix_frames(&mut frame, &nf, k);
+                    frame_for(&mut fb, BufferSlot::Scratch, Scene::Rotozoom, texs, blurs, 0, 1, st, gt, 0.0, beat.punch(gt), beat);
+                    mix_frames(&mut fb.image, &fb.scratch, k);
                 }
             }
             Scene::CyberPuzzle => {}
         }
-        frame.save(format!("{}/f{:05}.png", frames_dir(), idx)).unwrap();
+        fb.image.save(format!("{}/f{:05}.png", frames_dir(), idx)).unwrap();
         idx += 1;
         f += 1;
     }
@@ -1347,8 +1373,9 @@ fn main() {
     // hidden: render ONE frame with the realtime path's timeline math (verification)
     if mode == "tframe" {
         let t: f32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.0);
-        let frame = timeline_frame(&sd, &texs, &blurs, t);
-        frame.save(format!("{}/tframe.png", frames_dir())).unwrap();
+        let mut fb = FrameBuffers::new();
+        timeline_frame(&mut fb, &sd, &texs, &blurs, t);
+        fb.image.save(format!("{}/tframe.png", frames_dir())).unwrap();
         eprintln!("TFRAME t={:.4}s -> {}/tframe.png", t, out);
         return;
     }
@@ -1473,6 +1500,7 @@ mod realtime {
         let mut base = start_offset;      // demo-timeline seconds at `epoch`
         let mut next_frame = Instant::now();
         let mut frames: u64 = 0;
+        let mut fb = FrameBuffers::new();
 
         'running: loop {
             for ev in events.poll_iter() {
@@ -1500,8 +1528,8 @@ mod realtime {
             }
 
             let t = base + epoch.elapsed().as_secs_f32();
-            let frame = timeline_frame(sd, &texs, &blurs, t);
-            let _ = tex.update(None, frame.as_raw(), (W * 3) as usize);
+            timeline_frame(&mut fb, sd, &texs, &blurs, t);
+            let _ = tex.update(None, fb.image.as_raw(), (W * 3) as usize);
 
             canvas.set_draw_color(Color::RGB(0, 0, 0));
             canvas.clear();
@@ -1517,6 +1545,12 @@ mod realtime {
         }
         eprintln!("realtime: {} frames rendered", frames);
     }
+}
+
+// Reset a frame to opaque black (matching what ImageBuffer::new produced).
+#[inline]
+fn clear_image(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>) {
+    for p in img.pixels_mut() { *p = Rgb([0, 0, 0]); }
 }
 
 fn fade(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, k: f32) {
