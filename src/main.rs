@@ -887,10 +887,10 @@ fn draw_laser_beams(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, st: f32) {
 // the pieces' own view-space-depth test starts fresh (draw_pyramid writes depth
 // on a ~2.4 scale, the pieces on a ~1000 scale -- they must not mix).
 const BG_PYRAMID_COUNT: usize = 12;
-const BG_PYRAMID_MIN_RADIUS: f32 = 20.0;   // apparent half-size on screen, px
-const BG_PYRAMID_MAX_RADIUS: f32 = 64.0;
-const BG_PYRAMID_MIN_SPEED: f32 = 55.0;    // screen px / second, right -> left
-const BG_PYRAMID_MAX_SPEED: f32 = 200.0;
+const BG_PYRAMID_MIN_RADIUS: f32 = 10.0;   // apparent half-size on screen, px
+const BG_PYRAMID_MAX_RADIUS: f32 = 32.0;
+const BG_PYRAMID_MIN_SPEED: f32 = 110.0;   // screen px / second, right -> left
+const BG_PYRAMID_MAX_SPEED: f32 = 400.0;
 
 fn draw_background_pyramids(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32], t: f32) {
     if t < 0.0 { return; }
@@ -920,7 +920,9 @@ fn draw_background_pyramids(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut
         // draw_pyramid projects as scale/(persp - z) with persp == 2.4, so a
         // screen half-size of `radius` px wants scale ~= radius * 2.4.
         let scale = radius * 2.4;
-        draw_pyramid(img, depth, screen_x, screen_y, yaw, pitch, scale, 1.0, 0.0, false, Some(color));
+        // additive=true -> Blend::Add (no depth write), so overlapping pyramids
+        // and the laser beams accumulate as glow; color_override keeps red/orange.
+        draw_pyramid(img, depth, screen_x, screen_y, yaw, pitch, scale, 0.5, 0.0, true, Some(color));
     }
 }
 
