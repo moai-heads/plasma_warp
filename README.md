@@ -10,7 +10,7 @@ Timeline (demo-local seconds, loops):
 |---|---|---|---|
 | **Rotozoom** | 0.0 s | 16 s | plasma warp + ripple + rotozoom |
 | **MenInBlack** | 16.0 s | 16 s | 3D pyramid over a blurred background |
-| **CyberPuzzle** | 32.0 s | 14.0 s | image shatters into tumbling 3D pieces, streams back in from depth, unifies **on a snare**, sways on the hihat grid, flips 180° to reveal a second texture, then a background of red laser beams and red/orange wireframe mesh pyramids plays behind the revealed image |
+| **CyberPuzzle** | 32.0 s | 14.0 s | image shatters into tumbling 3D pieces, streams back in from depth, unifies **on a snare**, sways on the hihat grid, flips 180° to reveal a second texture, then a background of red laser beams and red/orange mesh pyramids (the MenInBlack mesh) plays behind the revealed image |
 
 ## Requirements
 

@@ -241,37 +241,39 @@ format conservatively up front: keep fences short and self-contained.
   (§12), and where the revealed back texture is cut out (§14) the beams show
   through. They are also visible in the black letterbox margins on each side.
 
-## 16. CyberPuzzle background — mesh pyramids
+## 16. CyberPuzzle background — mesh pyramids (MenInBlack mesh, custom color)
 - Drawn in the SAME background layer as the laser beams, right after them and
-  before `fill_surround_black`: `draw_background_pyramids(img, background_local)`.
+  before `fill_surround_black`: `draw_background_pyramids(img, depth, background_local)`.
   `background_local = st - beam_start` is the SAME elapsed time the beams use, so
   the pyramids also begin only once the 180-degree flip is COMPLETE (`t < 0` ->
   return, nothing drawn during fly-in / assembly / jiggle / flip).
-- Geometry: wireframe 4-sided pyramids (apex + square base, 8 edges). Each one
-  tumbles about its OWN origin via `rot3(yaw,pitch,roll)`, then is scaled,
-  placed at its world centre and projected with `project` (the same camera the
-  pieces use).
-- Everything is HASHED from the pyramid index (`hash01`): depth behind the quad
-  plane (`BG_PYRAMID_DEPTH_MIN..MAX`), apparent on-screen radius / speed / height,
-  the tumble rates + phases, the colour (RED or ORANGE) and the brightness gain.
-  Deterministic, no wall-clock RNG, like the beams.
-- LOOPING (right -> left): world-x = `half_span - (speed*t + phase) mod
+- They are the SAME mesh MenInBlack uses: `draw_pyramid` (a flat-shaded 4-sided
+  pyramid), NOT a bespoke wireframe. To let them be red / orange, `draw_pyramid`
+  gained a `color_override: Option<(f32,f32,f32)>` parameter. When `Some(c)` every
+  face uses `c`; when `None` MenInBlack keeps its own convention (blue per-face
+  palette when opaque, bright-green glass color when additive). MenInBlack passes
+  `None` and is byte-identical to before this change.
+- Each pyramid flies RIGHT -> LEFT and tumbles in 3D about its OWN origin via
+  draw_pyramid's yaw (about Y) + pitch (about X).
+- Everything is HASHED from the index (`hash01`): apparent size, speed, height,
+  tumble rates + phases, and colour (RED or ORANGE -- `(0.93,0.11,0.06)` /
+  `(1.0,0.48,0.09)`). Deterministic, no wall-clock RNG, like the beams.
+- LOOPING (right -> left): screen_x = `(CX + half_span) - (speed*t + phase) mod
   2*half_span`, with `half_span` = a full screen width + the pyramid's own radius
-  + a margin. So a pyramid rides from just OFF the right edge to just OFF the left
-  edge, then wraps and slides back IN from beyond the right edge — it re-enters
+  + a margin. A pyramid rides from just OFF the right edge to just OFF the left
+  edge, then wraps and slides back IN from beyond the right edge -- it re-enters
   gradually, it does not pop in mid-screen.
-- Blending: ADDITIVE over the black background (`draw_line_additive`, a soft glow:
-  full weight on the core pixel, 0.30 on the 4 edge neighbours, 0.12 on the 4
-  corners), so the wires read as glowing neon red/orange. Additive is
-  order-independent, so no depth test is needed and the pyramids never write depth
-  (they sit behind everything and are occluded by the pieces the normal way).
-- VISIBILITY: being in the background layer, the pyramids are governed by the
-  same two rules as the beams — `fill_surround_black` keeps them out of the black
+- DEPTH: draw_pyramid writes the depth buffer on its own `~2.4` scale (the
+  MenInBlack convention), whereas the puzzle pieces use view-space depth `~1000`.
+  The two MUST NOT mix, so `frame_cyberpuzzle` CLEARS the depth buffer
+  (`depth.fill(f32::INFINITY)`) again immediately after the background pass and
+  BEFORE the piece loop -- the background is entirely behind the pieces and must
+  not gate them. (Verified: every pre-flip frame is byte-identical to before.)
+- VISIBILITY: being in the background layer, the pyramids follow the same two
+  rules as the beams -- `fill_surround_black` keeps them out of the black
   letterbox margins, and past the flip they are seen ONLY through the transparent
-  cut-out region of the revealed back texture (`tex_scene4`). Note that texture's
-  transparent area is concentrated on its RIGHT half (bands L->R: 0,0,0,0,0,0.25,
-  0.73,1.0,1.0,1.0), so most of the pyramid field shows through the right side of
-  the mosaic; that is the texture's alpha map, not a bug.
-- COUNT: `BG_PYRAMID_COUNT = 14` — chosen so roughly 3-5 are inside the visible
-  transparent band at any instant (the loop span is ~1.3 screens wide and only
-  ~0.2 of a screen is see-through, so ~1/6 of them are visible at a time).
+  cut-out region of the revealed back texture (`tex_scene4`). That texture's
+  transparent area is concentrated on its RIGHT half, so most of the field shows
+  through the right side of the mosaic; that is the texture's alpha map, not a bug.
+- COUNT: `BG_PYRAMID_COUNT = 12`, so roughly a few are inside the visible band at
+  any instant.
