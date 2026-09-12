@@ -10,7 +10,7 @@ Timeline (demo-local seconds, loops):
 |---|---|---|---|
 | **Rotozoom** | 0.0 s | 16 s | plasma warp + ripple + rotozoom |
 | **MenInBlack** | 16.0 s | 16 s | 3D pyramid over a blurred background |
-| **CyberPuzzle** | 32.0 s | 8.2 s | image shatters into tumbling 3D pieces, streams back in from depth, unifies **on a snare**, sways on the hihat grid, then flips 180° to reveal a second texture |
+| **CyberPuzzle** | 32.0 s | 14.0 s | image shatters into tumbling 3D pieces, streams back in from depth, unifies **on a snare**, sways on the hihat grid, flips 180° to reveal a second texture, then a red laser-beam background plays behind the revealed image |
 
 ## Requirements
 

@@ -1222,7 +1222,7 @@ impl SceneData {
         let timeline: Vec<(Scene, f32, f32)> = vec![
             (Scene::Rotozoom, 0.0, 16.0),
             (Scene::MenInBlack, 16.0, 16.0),
-            (Scene::CyberPuzzle, 32.0, 8.2), // unify-on-snare + jiggle + snare-triggered flip reveal
+            (Scene::CyberPuzzle, 32.0, 14.0), // unify-on-snare + jiggle + flip, then laser-beam background tail
         ];
         SceneData { texs, blurs, beat, timeline }
     }

@@ -219,6 +219,10 @@ format conservatively up front: keep fences short and self-contained.
 - Vertical profile is a gradient: almost-white red core -> pure red -> fully
   transparent at the expanding edge. Blending is ADDITIVE over the black
   background, which is what makes the outer edge disappear cleanly.
+- SCENE LENGTH: the CyberPuzzle timeline entry was extended 8.2 s -> 14.0 s on
+  2026-09-13. Reason: the 180-deg flip completes at st≈8.093 s, i.e. the old
+  8.2 s entry ended only ~3 frames after the flip, so the post-flip background
+  had nowhere to play. 14.0 s gives ~5.9 s of beam background after the reveal.
 - The beams BEGIN only after the 180-degree flip is COMPLETE: the scene computes
   `beam_start = flip_start + CYBERPUZZLE_FLIP_DUR` and passes the elapsed time
   (`st - beam_start`) to `draw_laser_beams`, which returns early (no spawn, k<0
