@@ -76,7 +76,7 @@ format conservatively up front: keep fences short and self-contained.
 - Always build with `CARGO_TARGET_DIR=/tmp/...` so `target/` never lands in the
   repo (`.gitignore` also carries `/target`).
 - `cargo check` / `cargo build` is allowed to prove the crate compiles — this
-  downloads `sdl3`, `lewton`, `image` and their deps from crates.io. Fine.
+  downloads `sdl3`, `lewton`, `image` (only the `png` feature) and their deps from crates.io. Fine.
 - **Once the check passes and the project is packaged, purge every byte cargo
   downloaded, immediately:** remove `~/.cargo/registry`, `~/.cargo/.global-cache`
   and the `CARGO_TARGET_DIR`. No cargo build residue survives on the disk.

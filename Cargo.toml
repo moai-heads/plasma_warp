@@ -17,7 +17,7 @@ default = ["realtime"]
 realtime = ["dep:sdl3"]
 
 [dependencies]
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 # Per-frame arena allocation (bumpalo `collections` gives bump-allocated Vec).
 bumpalo = { version = "3", features = ["collections"] }
 # Fixed-capacity, zero-heap arrays (clip output, quad corners).
