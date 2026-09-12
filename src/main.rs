@@ -1354,6 +1354,7 @@ mod realtime {
     use sdl3::keyboard::Keycode;
     use sdl3::mixer;
     use sdl3::pixels::{Color, PixelFormat};
+    use sdl3::properties::{Properties, Setter};
     use sdl3::render::{ScaleMode, TextureAccess};
     use std::time::{Duration, Instant};
 
@@ -1391,8 +1392,16 @@ mod realtime {
             .expect("load meltdown_beat.ogg");
         let track = mixer.create_track().expect("create mixer track");
         track.set_audio(&music).expect("assign audio to track");
-        track.set_loops(-1).expect("loop forever");     // -1 == play forever
-        track.play().expect("start playback");
+        // LOOP FOREVER, set AT START via the play-options property. NB: calling
+        // track.set_loops(-1) BEFORE play() does NOT work -- per the SDL3_mixer
+        // docs, starting a stopped track REPLACES the loop count, so the pre-play
+        // value is discarded and the track plays exactly once then stops. (The
+        // crate's own mixer example has this bug; it goes unnoticed because it
+        // only plays ~11s of a 30s file.) The property name is the string value
+        // of MIX_PROP_PLAY_LOOPS_NUMBER ("SDL_mixer.play.loops"); -1 = infinite.
+        let mut opts = Properties::new().expect("create play properties");
+        opts.set("SDL_mixer.play.loops", -1i64).expect("set loops=-1");
+        track.play_with_options(&opts).expect("start looping playback");
         eprintln!("realtime: SDL3_mixer {} decoders, music looping",
                   mixer::get_num_audio_decoders());
 

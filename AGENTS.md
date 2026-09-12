@@ -105,6 +105,15 @@ format conservatively up front: keep fences short and self-contained.
   loads `meltdown_beat.ogg` and loops it. No hand-rolled PCM/lewton path.
 - Requires the `sdl3_mixer` system dev package (plus SDL3). The headless dumper
   build (`--no-default-features`) needs neither.
+- **LOOPING GOTCHA (fixed 2026-09-12):** `MIX_SetTrackLoops` (Rust `track.set_loops()`)
+  called BEFORE `play()` is a **no-op** — per the SDL3_mixer docs, starting a stopped
+  track REPLACES the loop count, so the pre-play value is discarded and the track plays
+  exactly once. Set looping AT START via `play_with_options` with the property
+  `"SDL_mixer.play.loops" = -1` (string value of `MIX_PROP_PLAY_LOOPS_NUMBER`), or call
+  `set_loops(-1)` AFTER `play()`. The `sdl3` crate's own mixer example has this bug; it
+  hides because the example only plays ~11s of a ~28s file. Symptom if wrong: music plays
+  one pass then silence. Verify by capturing with `SDL_AUDIODRIVER=disk` for > song length
+  and checking RMS does not drop to zero.
 
 ## 9. Git workflow — ALWAYS push
 - **Every new commit MUST be pushed to `origin` (`https://github.com/moai-heads/plasma_warp.git`,
