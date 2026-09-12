@@ -304,57 +304,22 @@ fn triangle_bounding_box(p: [(f32, f32); 3]) -> (i32, i32, i32, i32) {
     (minx, maxx, miny, maxy)
 }
 
-// Shader = where a fragment's color comes from. Blend = how it lands. Orthogonal.
-#[derive(Clone, Copy, Debug)]
-enum Surface {
-    Solid { base: (f32, f32, f32) },          // flat shaded color (current look)
-    Refract { strength: f32, chroma: f32 },   // sample bg pixels with a normal-driven offset
-}
-
-// Which surface shader the mesh renders with (toggle to test).
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum SurfaceKind {
-    Solid,   // flat shaded colors (classic)
-    Refract, // bg pixels sampled through the faces with normal-driven offset
-}
-
-// Mesh punch mode: does the snare punch tint the mesh (solid) or leave it pure glass?
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum MeshPunch {
-    SolidColor, // punch scales AND brightens the mesh (current behavior)
-    Glass,      // punch scales only; mesh shows bg through refraction, untouched by flash
-}
-
+// How a fragment lands on the framebuffer. Alpha = src-over (opaque when the
+// face alpha is 1.0); Add = additive, colors accumulate (glow / energy look).
 #[derive(Clone, Copy, Debug)]
 enum Blend {
-    Alpha,   // src-over: normal transparency
-    Add,     // additive: colors accumulate (glow / energy look)
-    Screen,  // screen blend: 1-(1-a)(1-b), soft light-accumulation
+    Alpha, // src-over: normal transparency
+    Add,   // additive: colors accumulate (glow / energy look)
 }
 
-// Sample the image at a pixel offset (clamped to the frame). Used by the
-// Refract shader: reads the already-composited background through the mesh.
-fn sample_bg(img: &ImageBuffer<Rgb<u8>, Vec<u8>>, x: i32, y: i32, dx: f32, dy: f32) -> [f32; 3] {
-    let sx = (x as f32 + dx).clamp(0.0, W as f32 - 1.0) as u32;
-    let sy = (y as f32 + dy).clamp(0.0, H as f32 - 1.0) as u32;
-    let p = img.get_pixel(sx, sy).0;
-    [p[0] as f32, p[1] as f32, p[2] as f32]
-}
-
-// offset: per-face refraction shift in pixels (0.0 for Solid). chroma spreads R/G/B.
+// base: flat shaded color (linear, 0..1, pre-lighting). lam: lambert term.
+// alpha: face opacity 0..1. mode: how the fragment lands (see Blend).
 #[allow(clippy::too_many_arguments)]
 fn fill_tri_flat(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
                  p: [(f32, f32); 3], dz: [f32; 3],
-                 surface: Surface, lam: f32,
-                 off: (f32, f32), chroma: f32,
+                 base: (f32, f32, f32), lam: f32,
                  alpha: f32, mode: Blend) {
-    let col: (f32, f32, f32) = match surface {
-        Surface::Solid { base } => (base.0 * lam * 255.0, base.1 * lam * 255.0, base.2 * lam * 255.0),
-        Surface::Refract { .. } => (0.0, 0.0, 0.0), // computed per fragment below
-    };
-    let refr = match surface { Surface::Refract { strength, chroma: ch } => Some((strength, ch)), _ => None };
-    // alpha: face opacity 0..1. bg shows through via src-over blend; the
-    // depth buffer still gates writes so transparency never re-draws behind.
+    let cc: [f32; 3] = [base.0 * lam * 255.0, base.1 * lam * 255.0, base.2 * lam * 255.0];
 
     let area = triangle_signed_area(p);
     if area.abs() < 1e-6 { return; }
@@ -369,29 +334,26 @@ fn fill_tri_flat(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
                 // Affine depth blend: the weights already sum to 1.
                 let z = w0 * dz[0] + w1 * dz[1] + w2 * dz[2];
                 let idx = y as usize * W + x as usize;
-                if z < depth[idx] {
-                    depth[idx] = z;
+                // Opaque (Alpha) fragments are depth-tested and write depth so
+                // nearer faces occlude farther ones. Additive fragments are NOT
+                // depth-gated: additive compositing is order-independent, so every
+                // face must blend -- otherwise the nearest face would cull the rest,
+                // which is wrong for transparency.
+                let pass = match mode {
+                    Blend::Alpha => z < depth[idx],
+                    Blend::Add   => true,
+                };
+                if pass {
+                    if matches!(mode, Blend::Alpha) { depth[idx] = z; }
                     let old = img.get_pixel(x as u32, y as u32).0;
-                    let cc: [f32; 3] = if let Some((_strength, _ch)) = refr {
-                        // refract: sample the composed bg (img pre-write at this frag)
-                        // at the fragment pos shifted by the normal-driven offset.
-                        // chroma: R/G/B sampled at slightly different strengths.
-                        let sam = |k: f32| sample_bg(img, x, y, off.0 * k, off.1 * k);
-                        let (mr, mg, mb) = (1.0 - chroma, 1.0, 1.0 + chroma);
-                        let s0 = sam(mr); let s1 = sam(mg); let s2 = sam(mb);
-                        // green emissive: keeps the glass luminous instead of dark
-                        let g = lam * 110.0;
-                        [s0[0] * lam + g * 0.12, s1[1] * lam + g, s2[2] * lam + g * 0.45]
-                    } else { [col.0, col.1, col.2] };
                     // Fixed-size [u8;3] built without a heap allocation: the old
                     // `.collect::<Vec<u8>>().try_into()` allocated a Vec PER PIXEL.
                     let out: [u8; 3] = std::array::from_fn(|c| {
                         let o = old[c] as f32;
                         let s = cc[c].clamp(0.0, 255.0);
                         let v = match mode {
-                            Blend::Alpha  => o + (s - o) * alpha,
-                            Blend::Add    => o + s * alpha,
-                            Blend::Screen => 255.0 - (255.0 - o) * (255.0 - s * alpha) / 255.0,
+                            Blend::Alpha => o + (s - o) * alpha,
+                            Blend::Add   => o + s * alpha,
                         };
                         v.clamp(0.0, 255.0) as u8
                     });
@@ -402,14 +364,13 @@ fn fill_tri_flat(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
     }
 }
 
-// Draw one pyramid (the whole mesh, or an explosion shard). refract=false:
-// opaque flat-shaded Solid faces. refract=true: transparent refracting glass
-// with green emissive, additive blend.
+// Draw one pyramid (the whole mesh, or an explosion shard). additive=false:
+// opaque flat-shaded faces (depth-tested). additive=true: same flat shading,
+// blended additively so the mesh reads as glowing transparency.
 #[allow(clippy::too_many_arguments)]
 fn draw_pyramid(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
                 cx: f32, cy: f32, yaw: f32, pitch: f32, scale: f32,
-                alpha: f32, punch: f32, refract: bool) {
-    const PUNCH_MODE: MeshPunch = MeshPunch::SolidColor;
+                alpha: f32, punch: f32, additive: bool) {
     let v0 = [(0.0f32, 1.0f32, 0.0f32),
               (1.0, -0.9, 0.0),
               (-0.5, -0.9, 0.8660),
@@ -450,23 +411,18 @@ fn draw_pyramid(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
         let mut ndl = n.0 * l.0 + n.1 * l.1 + n.2 * l.2;
         if n.0 * view.0 + n.1 * view.1 + n.2 * view.2 < 0.0 { ndl = -ndl; }
         let lam = 0.25 + 0.75 * ndl.max(0.0);
-        let punch_tint = match PUNCH_MODE { MeshPunch::SolidColor => 1.0 + punch.abs() * 2.0, MeshPunch::Glass => 1.0 };
+        let punch_tint = 1.0 + punch.abs() * 2.0; // snare punch scales + brightens the mesh
         let (br, bgc, bb) = base_col[(i0 + i1 + i2) as usize % 4];
         let base = (br * punch_tint, bgc * punch_tint, bb * punch_tint);
-        let facing = (n.0 * view.0 + n.1 * view.1 + n.2 * view.2).abs();
-        let shift = 18.0 * (1.0 - facing);
-        let off = (n.0 * shift, n.1 * shift);
-        let surface = if refract { Surface::Refract { strength: shift, chroma: 0.15 } }
-                      else { Surface::Solid { base } };
         let p = [proj(rv[i0]), proj(rv[i1]), proj(rv[i2])];
-        let mode = if refract { Blend::Add } else { Blend::Alpha };
+        let mode = if additive { Blend::Add } else { Blend::Alpha };
         // Depth is the VIEW-SPACE distance to the camera, so smaller = nearer.
         // The camera sits at z=+persp and looks down -z, hence view depth is
         // (persp - z_rotated). Passing raw z_rotated here (as before) inverted
         // the test: the rasterizer keeps the SMALLEST dz, i.e. the FARTHEST
         // face, so back faces drew over front faces -> visible "double layer".
         fill_tri_flat(img, depth, p, [persp - rv[i0].2, persp - rv[i1].2, persp - rv[i2].2],
-                      surface, lam, off, 0.15, alpha, mode);
+                      base, lam, alpha, mode);
     }
 }
 
@@ -1073,7 +1029,7 @@ fn frame_men_in_black(bump: &Bump, img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, dept
     }
     let (cx0, cy0) = (W as f32 * 0.5, H as f32 * 0.52);
     const SHARDS: usize = 9;
-    // whole mesh: drop -> 4 opaque syncs -> transparent refract glass
+    // whole mesh: drop -> 4 opaque syncs -> additive transparent
     if st >= drop_t && t_x < 0.0 {
         let u = st - drop_t;
         let start_off = -(cy0 + H as f32 * 0.65);
@@ -1083,14 +1039,14 @@ fn frame_men_in_black(bump: &Bump, img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, dept
         let n_sync = ls.iter().skip(3).filter(|&&b| b <= st).count();
         let mesh_alpha = if n_sync < 4 { 1.0 }
                          else { 0.5 + 0.5 * (1.0 - (u - (ls[6] - drop_t)) / 0.5).clamp(0.0, 1.0) };
-        let refract = mesh_alpha < 1.0;
+        let additive = mesh_alpha < 1.0;
         // mesh rides the SNARE channel (punch): scale pop + (while opaque) the
         // SolidColor tint flash. bg keeps the kick channel, so the two layers
         // now have independent rhythms again -- snare = mesh, kick = bg.
         draw_pyramid(img, depth, cx0, cy, yaw, pitch,
-                     H as f32 * (0.55 + 0.06 * (gt * 0.8).sin()), mesh_alpha, punch, refract);
+                     H as f32 * (0.55 + 0.06 * (gt * 0.8).sin()), mesh_alpha, punch, additive);
     } else if t_x >= 0.0 {
-        // explosion: shards = small transparent refracting pyramids flying
+        // explosion: shards = small additive-transparent pyramids flying
         // out on parabolic (gravity) paths, down off the bottom of the screen
         for i in 0..SHARDS {
             let fi = i as f32;

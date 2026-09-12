@@ -177,5 +177,18 @@ format conservatively up front: keep fences short and self-contained.
   `persp - z_rotated`. It passes `persp - rv[k].2` to `fill_tri_flat`. Passing
   the raw `rv[k].2` (done until 2026-09-12) INVERTED the test — the buffer kept
   the farthest face, so back faces drew over front faces, reading as "double
-  layered" triangles (most visible in the transparent glass phase). If you add
-  a mesh, convert your vertex depth to view distance before handing it over.
+  layered" triangles. If you add a mesh, convert your vertex depth to view
+  distance before handing it over.
+
+## 13. Transparent mesh = additive; no refract/glass shader
+- The MenInBlack mesh is flat-shaded. When it turns transparent (mesh_alpha<1,
+  and for the explosion shards) it blends ADDITIVELY (`Blend::Add`, `o+s*alpha`).
+- The old `Surface`/`SurfaceKind`/`MeshPunch::Glass`/`Blend::Screen` machinery and
+  the `sample_bg` refraction shader were removed 2026-09-12 (broken slop: it read
+  the framebuffer it was writing, so output depended on draw order).
+- `fill_tri_flat` now branches on `Blend`: `Alpha` fragments are depth-tested and
+  write depth (opaque occlusion, correct); `Add` fragments are NOT depth-gated
+  (additive compositing is order-independent — every face must blend, otherwise
+  the nearest face would cull the rest).
+- Consequence: stacked additive faces clamp at 255 (more glass = brighter). That
+  is the intended look now.
