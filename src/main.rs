@@ -277,16 +277,16 @@ fn edge(ax: f32, ay: f32, bx: f32, by: f32, px: f32, py: f32) -> f32 {
 // Twice the signed area of triangle (p0,p1,p2), via the same edge() primitive
 // the barycentrics use. Sign encodes winding; magnitude is the normalizer.
 #[inline]
-fn tri_area(p: [(f32, f32); 3]) -> f32 {
+fn triangle_signed_area(p: [(f32, f32); 3]) -> f32 {
     (p[1].0 - p[0].0) * (p[2].1 - p[0].1) - (p[1].1 - p[0].1) * (p[2].0 - p[0].0)
 }
 
 // Normalized screen-space barycentric weights of point P for triangle p
-// (sum to 1). edge(i,j,P) against the same-orientation tri_area() cancels the
+// (sum to 1). edge(i,j,P) against the same-orientation triangle_signed_area() cancels the
 // winding sign, so every weight is >= 0 exactly when P is inside -- for either
-// winding. w2 falls out of the sum-to-one property. `inva = 1/tri_area(p)`.
+// winding. w2 falls out of the sum-to-one property. `inva = 1/triangle_signed_area(p)`.
 #[inline]
-fn tri_bary(p: [(f32, f32); 3], inva: f32, px: f32, py: f32) -> (f32, f32, f32) {
+fn triangle_barycentric_weights(p: [(f32, f32); 3], inva: f32, px: f32, py: f32) -> (f32, f32, f32) {
     let w0 = ((p[1].0 - px) * (p[2].1 - py) - (p[1].1 - py) * (p[2].0 - px)) * inva;
     let w1 = ((p[2].0 - px) * (p[0].1 - py) - (p[2].1 - py) * (p[0].0 - px)) * inva;
     (w0, w1, 1.0 - w0 - w1)
@@ -295,7 +295,7 @@ fn tri_bary(p: [(f32, f32); 3], inva: f32, px: f32, py: f32) -> (f32, f32, f32) 
 // Bounding box of the triangle, clamped to the framebuffer. Only these pixels
 // can possibly be inside, so only these are scanned.
 #[inline]
-fn tri_bbox(p: [(f32, f32); 3]) -> (i32, i32, i32, i32) {
+fn triangle_bounding_box(p: [(f32, f32); 3]) -> (i32, i32, i32, i32) {
     let minx = p.iter().fold(f32::MAX, |m, q| m.min(q.0)).floor().max(0.0) as i32;
     let maxx = p.iter().fold(f32::MIN, |m, q| m.max(q.0)).ceil().min((W - 1) as f32) as i32;
     let miny = p.iter().fold(f32::MAX, |m, q| m.min(q.1)).floor().max(0.0) as i32;
@@ -355,15 +355,15 @@ fn fill_tri_flat(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut Vec<f32>,
     // alpha: face opacity 0..1. bg shows through via src-over blend; the
     // depth buffer still gates writes so transparency never re-draws behind.
 
-    let area = tri_area(p);
+    let area = triangle_signed_area(p);
     if area.abs() < 1e-6 { return; }
     let inva = 1.0 / area;
-    let (minx, maxx, miny, maxy) = tri_bbox(p);
+    let (minx, maxx, miny, maxy) = triangle_bounding_box(p);
     for y in miny..=maxy {
         for x in minx..=maxx {
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
             // Shared screen-space barycentrics (sum to 1, all >= 0 inside).
-            let (w0, w1, w2) = tri_bary(p, inva, px, py);
+            let (w0, w1, w2) = triangle_barycentric_weights(p, inva, px, py);
             if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 {
                 // Affine depth blend: the weights already sum to 1.
                 let z = w0 * dz[0] + w1 * dz[1] + w2 * dz[2];
@@ -560,14 +560,14 @@ fn raster_tex_tri(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
     // two edges). Sign encodes winding, so it works for either direction; we
     // just need it nonzero. area ~ 0 => triangle collapsed to a line/point
     // (a quad seen exactly edge-on, e.g. mid-flip): nothing to draw, bail out.
-    let area = tri_area([(sx[0], sy[0]), (sx[1], sy[1]), (sx[2], sy[2])]);
+    let area = triangle_signed_area([(sx[0], sy[0]), (sx[1], sy[1]), (sx[2], sy[2])]);
     if area.abs() < 1e-9 { return; }
     // Hoisted out of the pixel loops: the normalizer that turns raw per-pixel
     // edge-function AREAS (units of px^2) into dimensionless barycentric
     // FRACTIONS summing to 1. Signed divide cancels the winding sign too.
     let inva = 1.0 / area;
 
-    let (minx, maxx, miny, maxy) = tri_bbox([(sx[0], sy[0]), (sx[1], sy[1]), (sx[2], sy[2])]);
+    let (minx, maxx, miny, maxy) = triangle_bounding_box([(sx[0], sy[0]), (sx[1], sy[1]), (sx[2], sy[2])]);
     for py in miny..=maxy {
         for px in minx..=maxx {
             // Sample at the pixel CENTER (+0.5), not its top-left corner.
@@ -575,7 +575,7 @@ fn raster_tex_tri(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
             let fyp = py as f32 + 0.5;
 
             // Shared screen-space barycentrics (sum to 1, all >= 0 inside).
-            let (w0, w1, w2) = tri_bary([(sx[0], sy[0]), (sx[1], sy[1]), (sx[2], sy[2])], inva, fxp, fyp);
+            let (w0, w1, w2) = triangle_barycentric_weights([(sx[0], sy[0]), (sx[1], sy[1]), (sx[2], sy[2])], inva, fxp, fyp);
             // Inside test: all three weights >= 0 <=> pixel is inside the tri.
             if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 { continue; }
 

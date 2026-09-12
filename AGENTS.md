@@ -123,3 +123,20 @@ format conservatively up front: keep fences short and self-contained.
 - If `git push` fails auth, run `gh auth setup-git` first (git's credential helper must be
   wired to the `gh` CLI), then retry.
 - Media assets are NEVER pushed (see §7b) — verify the object store before every push.
+
+## 10. Naming — no abbreviations, be explicit
+- **Function names must NOT use abbreviations.** Spell the concept out in
+  full: a reader should not have to decode `bary`, `tri`, `proj`, `calc`,
+  `tmp`, `cfg`, `ctx`, `buf`, `len`-style stems.
+  - Write `triangle_barycentric_weights`, not `tri_bary`.
+  - Write `triangle_signed_area`, not `tri_area`.
+  - Write `triangle_bounding_box`, not `tri_bbox`.
+  - Write `project_point`, not `proj`. Write `rotate_xyz`, not `rot3`.
+- Names must be **clear and self-describing**: the name alone should say what
+  the function computes/does and, where non-obvious, its units or convention
+  (e.g. `triangle_signed_area` - "signed" tells you the winding sign matters).
+- Applies to new code AND to renames: when touching a function whose name is
+  abbreviated, rename it as part of the change.
+- Local variables and short-lived loop indices are exempt (a loop counter `i`,
+  `w0/w1/w2` barycentric weights, `x/y` pixel coords are fine); this rule is
+  about the *names of functions* a stranger has to navigate by.
