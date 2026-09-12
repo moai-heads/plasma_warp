@@ -2,7 +2,7 @@
 name = "plasma_warp"
 version = "0.1.0"
 edition = "2021"
-description = "plasma_warp: a scene-based, music-synced demo (Rotozoom, TriangleDance, CyberPuzzle)"
+description = "plasma_warp: a scene-based, music-synced demo (Rotozoom, MenInBlack, CyberPuzzle)"
 readme = "README.md"
 license = "MIT"
 

@@ -9,7 +9,7 @@ Timeline (demo-local seconds, loops):
 | scene | starts | len | what |
 |---|---|---|---|
 | **Rotozoom** | 0.0 s | 16 s | plasma warp + ripple + rotozoom |
-| **TriangleDance** | 16.0 s | 16 s | 3D pyramid over a blurred background |
+| **MenInBlack** | 16.0 s | 16 s | 3D pyramid over a blurred background |
 | **CyberPuzzle** | 32.0 s | 8.2 s | image shatters into tumbling 3D pieces, streams back in from depth, unifies **on a snare**, sways on the hihat grid, then flips 180° to reveal a second texture |
 
 ## Requirements
@@ -39,7 +39,7 @@ cargo run --release
 # start straight into one scene (music is seeked to match) ...
 cargo run --release -- cyberpuzzle
 cargo run --release -- rotozoom
-cargo run --release -- triangledance
+cargo run --release -- meninblack
 
 # ... or at an absolute demo-timeline time in seconds
 cargo run --release -- 32
@@ -52,7 +52,7 @@ argument jumps straight there, seeking the music to the matching song position
 (`start % song_len`) so audio and visuals stay locked.
 
 - **F1..F12** jump live to the 1st..12th timeline entry, seeking the music to
-  match (F1=Rotozoom, F2=TriangleDance, F3=CyberPuzzle).
+  match (F1=Rotozoom, F2=MenInBlack, F3=CyberPuzzle).
 - **Esc** or closing the window quits.
 - The demo is a software renderer at 30 fps; on a slow machine a release build
   is strongly recommended (a debug build renders the heavy scenes at ~½ speed).
@@ -68,7 +68,7 @@ cargo run --release --no-default-features -- demo
 # one scene only (`dev` also prints the audio offset to mux with)
 cargo run --release --no-default-features -- dev cyberpuzzle
 cargo run --release --no-default-features -- dev rotozoom
-cargo run --release --no-default-features -- dev triangledance
+cargo run --release --no-default-features -- dev meninblack
 ```
 
 With the default `realtime` feature you can still ask for the dumper by name:
@@ -81,7 +81,7 @@ root). Override the directory with `PLASMA_ASSET_DIR=/path/to/assets`, and the
 frame output dir with `PLASMA_FRAMES_DIR`.
 
 ```
-tex_purple.png  tex_green.png  tex_blue.png       # Rotozoom + TriangleDance
+tex_purple.png  tex_green.png  tex_blue.png       # Rotozoom + MenInBlack
 tex_scene3.png  tex_scene4.png                    # CyberPuzzle front / back
 meltdown_beat.ogg                                 # the track
 beats.txt  kicks.txt                              # hand-labelled onsets (seconds)

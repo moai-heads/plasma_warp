@@ -1,5 +1,5 @@
 // plasma_warp: scene-based demo engine
-// Scenes: Rotozoom (plasma warp + ripple + rotozoom), TriangleDance (pyramid + blurred bg)
+// Scenes: Rotozoom (plasma warp + ripple + rotozoom), MenInBlack (pyramid + blurred bg)
 // Rust, direct rustc, image vault per POLICY. Renders PNG frames for ffmpeg.
 use std::path::Path;
 use image::{ImageBuffer, Rgb};
@@ -16,7 +16,7 @@ const FADE_SECS: f32 = 1.5;   // fade-to-black / fade-in duration
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Scene {
     Rotozoom,
-    TriangleDance,
+    MenInBlack,
     CyberPuzzle, // skeleton: effect not implemented yet
 }
 
@@ -265,7 +265,7 @@ fn frame_rotozoom(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
     }
 }
 
-// ---------------- Scene: TriangleDance ----------------
+// ---------------- Scene: MenInBlack ----------------
 
 #[inline]
 fn edge(ax: f32, ay: f32, bx: f32, by: f32, px: f32, py: f32) -> f32 {
@@ -980,7 +980,7 @@ fn frame_cyberpuzzle(bump: &Bump, img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth
     }
 }
 
-fn frame_tri(bump: &Bump, img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
+fn frame_men_in_black(bump: &Bump, img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
              ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, kick: f32, beat: &BeatSync) {
     clear_image(img);
     depth.fill(f32::INFINITY);
@@ -1125,7 +1125,7 @@ fn frame_for(bump: &Bump, fb: &mut FrameBuffers, slot: BufferSlot, scene: Scene,
             };
             frame_rotozoom(img, texs[t0], blurs[t0], texs[t1], blurs[t1], gt, mix, p)
         }
-        Scene::TriangleDance => frame_tri(bump, img, &mut fb.depth, texs[2], blurs[2], st, gt, punch, beat.punch_kick(gt), beat), // blue bg; mesh=snare, bg=kick
+        Scene::MenInBlack => frame_men_in_black(bump, img, &mut fb.depth, texs[2], blurs[2], st, gt, punch, beat.punch_kick(gt), beat), // blue bg; mesh=snare, bg=kick
         Scene::CyberPuzzle => frame_cyberpuzzle(bump, img, &mut fb.depth, texs[3], texs[4], st, gt, beat), // front=tex_scene3, back=tex_scene4
     }
 }
@@ -1140,7 +1140,7 @@ const SONG_LEN: f32 = 27.8395; // ffprobe duration of meltdown_beat.ogg // meltd
 fn parse_scene(s: &str) -> Option<Scene> {
     match s {
         "rotozoom" => Some(Scene::Rotozoom),
-        "triangledance" | "triangles" | "tri" => Some(Scene::TriangleDance),
+        "meninblack" | "mib" => Some(Scene::MenInBlack),
         "cyberpuzzle" | "puzzle" => Some(Scene::CyberPuzzle),
         _ => None,
     }
@@ -1181,7 +1181,7 @@ impl SceneData {
         // TIMELINE: (scene, demo_start_sec, duration_sec) -- the sync contract.
         let timeline: Vec<(Scene, f32, f32)> = vec![
             (Scene::Rotozoom, 0.0, 16.0),
-            (Scene::TriangleDance, 16.0, 16.0),
+            (Scene::MenInBlack, 16.0, 16.0),
             (Scene::CyberPuzzle, 32.0, 8.2), // unify-on-snare + jiggle + snare-triggered flip reveal
         ];
         SceneData { texs, blurs, beat, timeline }
@@ -1223,7 +1223,7 @@ enum BufferSlot { Primary, Scratch }
 fn scene_segs(scene: Scene) -> [usize; 2] {
     match scene {
         Scene::Rotozoom => [0, 1],
-        Scene::TriangleDance => [2, 1],
+        Scene::MenInBlack => [2, 1],
         Scene::CyberPuzzle => [3, 3],
     }
 }
@@ -1258,7 +1258,7 @@ fn timeline_frame(bump: &Bump, fb: &mut FrameBuffers, sd: &SceneData, texs: &[&T
                 fade(&mut fb.image, 1.0 - smooth((st - (dur - FADE_SECS)) / FADE_SECS));
             }
         }
-        Scene::TriangleDance => {
+        Scene::MenInBlack => {
             if st < FADE_SECS { fade(&mut fb.image, smooth(st / FADE_SECS)); }
         }
         Scene::CyberPuzzle => {}
@@ -1307,7 +1307,7 @@ fn render_range(bump: &mut Bump, scene: Scene, start: f32, dur: f32,
                     fade(&mut fb.image, 1.0 - k);
                 }
             }
-            Scene::TriangleDance => {
+            Scene::MenInBlack => {
                 // scene always starts black (after handoff in demo, clean in dev):
                 // fade in over first FADE_SECS, identical ramp to the demo fade-in
                 if st < FADE_SECS {
@@ -1393,7 +1393,7 @@ fn main() {
         // dev mode: single scene, exits when done. Music starts at start % SONG_LEN.
         let name = args.get(2).map(|s| s.as_str()).unwrap_or("");
         let sc = parse_scene(name)
-            .unwrap_or_else(|| panic!("usage: plasma_warp dev <rotozoom|triangledance|cyberpuzzle>"));
+            .unwrap_or_else(|| panic!("usage: plasma_warp dev <rotozoom|meninblack|cyberpuzzle>"));
         let (scene, start, dur) = *sd.timeline.iter().find(|(s, _, _)| *s == sc)
             .unwrap_or_else(|| panic!("scene not in timeline"));
         eprintln!("DEV MODE: {:?} | demo-timeline start {:.3}s, dur {:.1}s", scene, start, dur);
