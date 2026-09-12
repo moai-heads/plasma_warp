@@ -396,6 +396,8 @@ fn draw_pyramid(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
     };
     let faces = [(0usize, 1usize, 2usize), (0, 2, 3), (0, 3, 1), (1, 3, 2)];
     let base_col = [(0.15f32, 0.55f32, 1.0f32), (0.2, 0.85, 1.0), (0.1, 0.45, 0.95), (0.35, 0.95, 1.0)];
+    // Transparent (additive) mesh is bright green instead of the blue palette.
+    let glass_col = (0.10f32, 1.0f32, 0.18f32);
     for &(i0, i1, i2) in &faces {
         let (ax, ay, az) = rv[i0]; let (bx, by, bz) = rv[i1]; let (cxx, cyy, czz) = rv[i2];
         let e1 = (bx - ax, by - ay, bz - az);
@@ -412,7 +414,7 @@ fn draw_pyramid(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
         if n.0 * view.0 + n.1 * view.1 + n.2 * view.2 < 0.0 { ndl = -ndl; }
         let lam = 0.25 + 0.75 * ndl.max(0.0);
         let punch_tint = 1.0 + punch.abs() * 2.0; // snare punch scales + brightens the mesh
-        let (br, bgc, bb) = base_col[(i0 + i1 + i2) as usize % 4];
+        let (br, bgc, bb) = if additive { glass_col } else { base_col[(i0 + i1 + i2) as usize % 4] };
         let base = (br * punch_tint, bgc * punch_tint, bb * punch_tint);
         let p = [proj(rv[i0]), proj(rv[i1]), proj(rv[i2])];
         let mode = if additive { Blend::Add } else { Blend::Alpha };

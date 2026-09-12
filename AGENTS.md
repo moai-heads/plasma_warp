@@ -192,3 +192,6 @@ format conservatively up front: keep fences short and self-contained.
   the nearest face would cull the rest).
 - Consequence: stacked additive faces clamp at 255 (more glass = brighter). That
   is the intended look now.
+- Color split: the OPAQUE mesh uses the blue `base_col` palette; the transparent
+  (additive) mesh uses a single bright green `glass_col`, so transparency reads
+  as green glow. Flat lambert (`lam`) still varies per face, keeping the 3D form.
