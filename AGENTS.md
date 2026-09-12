@@ -256,8 +256,9 @@ format conservatively up front: keep fences short and self-contained.
 - Each pyramid flies RIGHT -> LEFT and tumbles in 3D about its OWN origin via
   draw_pyramid's yaw (about Y) + pitch (about X).
 - Everything is HASHED from the index (`hash01`): apparent size, speed, height,
-  tumble rates + phases, and colour (RED or ORANGE -- `(0.93,0.11,0.06)` /
-  `(1.0,0.48,0.09)`). Deterministic, no wall-clock RNG, like the beams.
+  tumble rates + phases, and colour (RED `(0.93,0.11,0.06)` or ORANGE
+  `(1.65,0.34,0.05)` -- red channel past 1.0 so additive makes it brighter, green
+  cut so the hue sits closer to red). Deterministic, no wall-clock RNG, like the beams.
 - BLENDING: ADDITIVE (`additive=true` -> `Blend::Add`, alpha 0.5, no depth write),
   so overlapping pyramids and the laser beams accumulate as glow; the
   `color_override` still pins red/orange. Apparent size 10..32 px, screen speed 220..800 px/s.

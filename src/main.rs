@@ -912,10 +912,13 @@ fn draw_background_pyramids(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut
         let yaw = spin_sign * (0.5 + 0.9 * hash01(s, 0, 36.0)) * t + hash01(s, 0, 37.0) * tau;
         let pitch = (0.4 + 0.9 * hash01(s, 0, 38.0)) * t + hash01(s, 0, 39.0) * tau;
         // colour: red or orange, hashed per pyramid (linear 0..1, pre-lighting)
+        // Orange is a brighter, redder amber than before: the red channel is
+        // pushed past 1.0 (additive -> more glow) and green is cut, so it hue-
+        // shifts toward red. Red is unchanged.
         let color = if hash01(s, 0, 42.0) < 0.5 {
             (0.93, 0.11, 0.06)      // red
         } else {
-            (1.0, 0.48, 0.09)       // orange
+            (1.65, 0.34, 0.05)     // bright orange, shifted toward red
         };
         // draw_pyramid projects as scale/(persp - z) with persp == 2.4, so a
         // screen half-size of `radius` px wants scale ~= radius * 2.4.
