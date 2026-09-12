@@ -1062,7 +1062,7 @@ fn frame_men_in_black(bump: &Bump, img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, dept
             if y < H as f32 + 150.0 && x > -150.0 && x < W as f32 + 150.0 {
                 let yaw = gt * 1.7 + fi * 1.3;
                 let pitch = 0.45 + 0.3 * (gt * 0.7 + fi).sin();
-                let s = H as f32 * 0.55 * (0.13 + 0.05 * fr2) * (1.0 + punch);
+                let s = 2.0 * H as f32 * 0.55 * (0.13 + 0.05 * fr2) * (1.0 + punch); // 2x shard size
                 draw_pyramid(img, depth, x, y, yaw, pitch, s, 0.5, punch, true);
             }
         }
