@@ -1278,6 +1278,23 @@ fn render_range(scene: Scene, start: f32, dur: f32,
     idx
 }
 
+// Realtime start selector: either an absolute demo-timeline time in seconds, or
+// a named scene resolved against TIMELINE. Chosen from argv (`plasma_warp
+// <scene>` / `plasma_warp <seconds>`) with the PLASMA_START_T env var winning.
+#[allow(dead_code)]
+enum RtStart { Time(f32), Scene(Scene) }
+
+#[allow(dead_code)]
+fn realtime_start(arg1: &str) -> Option<RtStart> {
+    if let Ok(v) = std::env::var("PLASMA_START_T") {
+        if let Ok(t) = v.trim().parse::<f32>() { return Some(RtStart::Time(t)); }
+    }
+    if !arg1.is_empty() {
+        if let Ok(t) = arg1.parse::<f32>() { return Some(RtStart::Time(t)); }
+    }
+    parse_scene(arg1).map(RtStart::Scene)
+}
+
 // ---------------- Entry points ----------------
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -1291,7 +1308,7 @@ fn main() {
     {
         if !headless_cmd {
             let sd = SceneData::load();
-            realtime::run(&sd);
+            realtime::run(&sd, realtime_start(arg1));
             return;
         }
     }
@@ -1358,9 +1375,29 @@ mod realtime {
     use sdl3::render::{ScaleMode, TextureAccess};
     use std::time::{Duration, Instant};
 
-    pub fn run(sd: &SceneData) {
+    // F1..F12 -> 0-based timeline index (F1 = first scene, ...). None = other key.
+    fn fn_key_index(kc: Keycode) -> Option<usize> {
+        use Keycode::*;
+        Some(match kc {
+            F1 => 0, F2 => 1, F3 => 2, F4 => 3, F5 => 4, F6 => 5,
+            F7 => 6, F8 => 7, F9 => 8, F10 => 9, F11 => 10, F12 => 11,
+            _ => return None,
+        })
+    }
+
+    pub fn run(sd: &SceneData, start: Option<RtStart>) {
         let texs = sd.tex_refs();
         let blurs = sd.blur_refs();
+
+        // Resolve the requested start into a demo-timeline offset. A scene name
+        // maps to its TIMELINE start; a explicit number is used as-is.
+        let start_offset: f32 = match start {
+            Some(RtStart::Time(t)) => t,
+            Some(RtStart::Scene(sc)) => sd.timeline.iter()
+                .find(|(s, _, _)| *s == sc).map(|(_, st, _)| *st).unwrap_or(0.0),
+            None => 0.0,
+        };
+        let song_offset = start_offset.rem_euclid(SONG_LEN);
 
         let sdl = sdl3::init().expect("SDL_Init failed");
 
@@ -1399,19 +1436,25 @@ mod realtime {
         // crate's own mixer example has this bug; it goes unnoticed because it
         // only plays ~11s of a 30s file.) The property name is the string value
         // of MIX_PROP_PLAY_LOOPS_NUMBER ("SDL_mixer.play.loops"); -1 = infinite.
+        // Start position: seek the music to `song_offset` so audio matches the
+        // requested scene (song_offset = start_offset % song length; scenes past
+        // the track length ride the looping music, exactly as in demo mode).
         let mut opts = Properties::new().expect("create play properties");
         opts.set("SDL_mixer.play.loops", -1i64).expect("set loops=-1");
+        opts.set("SDL_mixer.play.start_millisecond", (song_offset as f64 * 1000.0).round() as i64)
+            .expect("set start offset");
         track.play_with_options(&opts).expect("start looping playback");
-        eprintln!("realtime: SDL3_mixer {} decoders, music looping",
-                  mixer::get_num_audio_decoders());
+        eprintln!("realtime: SDL3_mixer {} decoders | start demo t={:.3}s (song {:.3}s) | F1..F12 jump, ESC quit",
+                  mixer::get_num_audio_decoders(), start_offset, song_offset);
 
         let max_frames: u64 = std::env::var("PLASMA_MAX_FRAMES")
             .ok().and_then(|v| v.parse().ok()).unwrap_or(0);
 
         let mut events = sdl.event_pump().expect("event pump");
-        let start = Instant::now();
         let frame_dt = Duration::from_secs_f64(1.0 / FPS as f64);
-        let mut next_frame = start;
+        let mut epoch = Instant::now();   // wall clock at the current seek
+        let mut base = start_offset;      // demo-timeline seconds at `epoch`
+        let mut next_frame = Instant::now();
         let mut frames: u64 = 0;
 
         'running: loop {
@@ -1419,11 +1462,27 @@ mod realtime {
                 match ev {
                     Event::Quit { .. } => break 'running,
                     Event::KeyDown { keycode: Some(Keycode::Escape), .. } => break 'running,
+                    // F1..F12 jump straight to the 1st..12th TIMELINE entry and
+                    // seek the music to the same song position, so visuals and
+                    // audio stay locked after the jump.
+                    Event::KeyDown { keycode: Some(kc), .. } => {
+                        if let Some(idx) = fn_key_index(kc) {
+                            if let Some(&(sc, st, _)) = sd.timeline.get(idx) {
+                                base = st;
+                                epoch = Instant::now();
+                                let song = st.rem_euclid(SONG_LEN);
+                                let ms = (song as f64 * 1000.0).round() as i64;
+                                let _ = track.set_playback_position(track.ms_to_frames(ms));
+                                eprintln!("realtime: jump -> {:?} (demo t={:.3}s, song {:.3}s)",
+                                          sc, st, song);
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
 
-            let t = start.elapsed().as_secs_f32();
+            let t = base + epoch.elapsed().as_secs_f32();
             let frame = timeline_frame(sd, &texs, &blurs, t);
             let _ = tex.update(None, frame.as_raw(), (W * 3) as usize);
 

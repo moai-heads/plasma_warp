@@ -31,13 +31,26 @@ step of our own.
 ## Build & run — realtime window + music (default)
 
 ```sh
+# whole timeline from the top
 cargo run --release
+
+# start straight into one scene (music is seeked to match) ...
+cargo run --release -- cyberpuzzle
+cargo run --release -- rotozoom
+cargo run --release -- triangledance
+
+# ... or at an absolute demo-timeline time in seconds
+cargo run --release -- 32
 ```
 
 Opens a resizable SDL3 window (renders at 640×360, scaled + letterboxed) and
 plays `meltdown_beat.ogg` underneath via **SDL3_mixer**, looping, in sync with
-the visual timeline.
+the visual timeline. Passing a scene name (or a number of seconds) as the first
+argument jumps straight there, seeking the music to the matching song position
+(`start % song_len`) so audio and visuals stay locked.
 
+- **F1..F12** jump live to the 1st..12th timeline entry, seeking the music to
+  match (F1=Rotozoom, F2=TriangleDance, F3=CyberPuzzle).
 - **Esc** or closing the window quits.
 - The demo is a software renderer at 30 fps; on a slow machine a release build
   is strongly recommended (a debug build renders the heavy scenes at ~½ speed).
@@ -90,6 +103,7 @@ this project. If timing is wrong, fix the labels, not the code.
 | `PLASMA_ASSET_DIR` | asset directory (default `.`) |
 | `PLASMA_FRAMES_DIR` | frame output dir (default `frames`) |
 | `PLASMA_MAX_FRAMES` | realtime: exit after N frames (for smoke tests) |
+| `PLASMA_START_T` | realtime: start at this demo-timeline time in seconds (overrides the CLI scene/time argument) |
 | `PLASMA_ROTOZOOM_SYNC` | `snare` (default) or `kick` — rotozoom punch source |
 | `PLASMA_NO_SNARE` / `PLASMA_NO_KICK` | silence a channel (for A/B diffs) |
 | `CYBERPUZZLE_*` | per-effect tuning: `COLS`, `ROWS`, `SHAPE_AMP`, `ORIGIN_Z`, `EASE_K`, `DANCE_AMP`, `FORCE_S`, `TINT`, `SPIN`, `TIMING` |
