@@ -195,3 +195,13 @@ format conservatively up front: keep fences short and self-contained.
 - Color split: the OPAQUE mesh uses the blue `base_col` palette; the transparent
   (additive) mesh uses a single bright green `glass_col`, so transparency reads
   as green glow. Flat lambert (`lam`) still varies per face, keeping the 3D form.
+
+## 14. Texture alpha cutout (raster_tex_tri)
+- `raster_tex_tri` samples texel ALPHA and DISCARDS texels with `a < TEX_ALPHA_CUTOFF`
+  (0.5): no color, no depth write, so whatever is already behind shows through.
+- `Tex::sample_clamp_rgba` supplies (rgb, alpha); textures with no alpha channel
+  sample alpha 1.0, so the test is a NO-OP for opaque textures (the CyberPuzzle
+  FRONT texture is byte-identical before/after). Only textures with real cutouts
+  are affected — currently the CyberPuzzle BACK texture (tex_scene4, ~40%
+  transparent), so the 180-deg flip now reveals the background through the holes
+  instead of drawing the lavender fill under the transparent region.

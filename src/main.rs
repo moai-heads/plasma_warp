@@ -518,6 +518,13 @@ fn project(p: V3) -> (f32, f32, f32) { // -> screen x, screen y, 1/z
 // lam = flat per-face lighting (computed per quad upstream). Depth test on
 // view-space z (smaller = closer).
 #[allow(clippy::too_many_arguments)]
+// Alpha cutout: texels with alpha below this are DISCARDED entirely (no color,
+// no depth write), so whatever is already behind them shows through. Textures
+// without an alpha channel always sample alpha 1.0, so this is a no-op for the
+// opaque front texture and only bites where a texture actually has cutouts
+// (e.g. the revealed back of the CyberPuzzle flip).
+const TEX_ALPHA_CUTOFF: f32 = 0.5;
+
 fn raster_tex_tri(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
                   sx: [f32; 3], sy: [f32; 3],
                   u: [f32; 3], v: [f32; 3], invz: [f32; 3],
@@ -552,16 +559,21 @@ fn raster_tex_tri(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
             if iz <= 0.0 { continue; }          // through/behind the eye: skip
             let z = 1.0 / iz;                    // back to real view-space depth
 
+            // Perspective-correct UV. Interpolate u/z and v/z (linear in
+            // screen space), then divide by interpolated 1/z (= iz) to undo the
+            // foreshortening: u = (sum w_i*u_i/z_i) / (sum w_i/z_i). At a vertex
+            // this returns exactly that vertex's u,v.
+            let uu = ((w0 * u[0] * invz[0] + w1 * u[1] * invz[1] + w2 * u[2] * invz[2]) / iz).clamp(0.0, 1.0);
+            let vv = ((w0 * v[0] * invz[0] + w1 * v[1] * invz[1] + w2 * v[2] * invz[2]) / iz).clamp(0.0, 1.0);
+
+            // Alpha cutout: a transparent texel writes neither color nor depth,
+            // so whatever was drawn behind it remains visible.
+            let (c, a) = tex.sample_clamp_rgba(uu, vv);
+            if a < TEX_ALPHA_CUTOFF { continue; }
+
             let idx = py as usize * W + px as usize;
             if z < depth[idx] {                  // z-buffer: smaller z = closer
                 depth[idx] = z;
-                // Perspective-correct UV. Interpolate u/z and v/z (linear in
-                // screen space), then divide by interpolated 1/z (= iz) to undo
-                // the foreshortening: u = (sum w_i*u_i/z_i) / (sum w_i/z_i).
-                // At a vertex this returns exactly that vertex's u,v.
-                let uu = ((w0 * u[0] * invz[0] + w1 * u[1] * invz[1] + w2 * u[2] * invz[2]) / iz).clamp(0.0, 1.0);
-                let vv = ((w0 * v[0] * invz[0] + w1 * v[1] * invz[1] + w2 * v[2] * invz[2]) / iz).clamp(0.0, 1.0);
-                let c = tex.sample_clamp(uu, vv);
                 // Flat per-face lighting: scale the texel by lam.
                 img.put_pixel(px as u32, py as u32, Rgb([
                     (c[0] * lam).clamp(0.0, 255.0) as u8,
