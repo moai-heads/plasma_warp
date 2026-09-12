@@ -13,6 +13,28 @@ file; this one is ours, versioned in the repo, and safe to read and edit here.
 - Same for other bulky text (sync data, logs, build output): attach a file,
   don't inline it.
 
+## 1b. Message formatting — code blocks NEVER span messages
+- **Every fenced code block must open AND close inside ONE Discord message.** A
+  fence that straddles a message boundary renders as broken formatting: the
+  opening ```` ``` ```` lands in message 1, the closing ```` ``` ```` in message
+  2, and the client shows raw backticks + swallows the block.
+- Assume NOTHING about where the client splits a reply. The agent does not
+  control message boundaries (see below), so treat every block as if it could be
+  cut at any point.
+- Long output → **multiple short, independently-closed blocks**, not one giant
+  block. Rule of thumb: keep any single fenced block comfortably short (well
+  under ~1500 chars) and, when a listing/table/log is longer, break it into
+  several complete blocks with normal prose between them.
+- Never leave a dangling opening fence at the end of an output chunk. If a block
+  might not fit, close it early and continue in a fresh block.
+
+### Can the agent read/edit its own sent messages?
+No. The tooling available here is the sandbox shell, file-send, and web search —
+there is no Discord read/edit/delete capability. The agent therefore **cannot
+see the individual messages it sent**, cannot confirm where a split occurred,
+and cannot fix or retract a broken message after the fact. The only lever is to
+format conservatively up front: keep fences short and self-contained.
+
 ## 2. Output hygiene
 - Renders (frames/, *.mp4, *.gif, intermediates) are DELIVERABLES ONLY.
 - After sending, DELETE them from the project. Keep only source, config, and
