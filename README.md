@@ -24,7 +24,9 @@ Timeline (demo-local seconds, loops):
 - **No SDL needed** for the headless frame-dumper build.
 
 `cargo` finds the libraries via `pkg-config` (a `sdl3.pc` / `sdl3-mixer.pc`).
-The only other dependency is pure-Rust `image`; audio (Ogg/Vorbis decoding +
+The only other dependencies are pure-Rust: `image`, plus `bumpalo` (a per-frame
+arena — one `Bump`, created once outside the render loop and reset each frame)
+and `arrayvec` (fixed-capacity, zero-heap arrays). Audio (Ogg/Vorbis decoding +
 mixing) is handled by **SDL3_mixer**, so there is no `lewton`/libvorbis build
 step of our own.
 

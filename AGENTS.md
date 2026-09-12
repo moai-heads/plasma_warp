@@ -49,7 +49,7 @@ format conservatively up front: keep fences short and self-contained.
   - **Sandbox dev — direct `rustc`** against the shared rlib vault at
     /root/rustlib/ (see /root/POLICY/rust.md). Use this for headless iteration
     here:
-    `rustc --edition 2021 -O src/main.rs --extern image=/root/rustlib/libimage.rlib -L dependency=/root/rustlib -o app`
+    `rustc --edition 2021 -O src/main.rs --extern image=/root/rustlib/libimage.rlib --extern bumpalo=/root/rustlib/libbumpalo.rlib --extern arrayvec=/root/rustlib/libarrayvec.rlib -L dependency=/root/rustlib -o app`
 - Always recompile before rendering; never claim a fix from a stale binary.
 
 ## 4. Sync data — hand-labelled ground truth
@@ -140,3 +140,27 @@ format conservatively up front: keep fences short and self-contained.
 - Local variables and short-lived loop indices are exempt (a loop counter `i`,
   `w0/w1/w2` barycentric weights, `x/y` pixel coords are fine); this rule is
   about the *names of functions* a stranger has to navigate by.
+
+## 11. Memory / allocation policy — bumpalo per frame, Vec for persistent
+- **Persistent data** that lives for the whole program run (textures, `FrameBuffers`,
+  timeline, sync labels, anything allocated once at startup) uses ordinary std
+  `Vec`/`Box`. It is allocated once and never reallocated inside the loop.
+- **Anything allocated from scratch every frame** (scratch lists, temporary
+  geometry, per-frame containers) MUST use **bumpalo**. There is exactly ONE
+  `Bump` per program run, created OUTSIDE the main render loop and passed down by
+  reference: `&Bump` wherever something is allocated; `&mut Bump` only at the loop
+  level, solely to call `reset()`.
+- **`reset()` the bump once per frame**, after all per-frame bump data is done, so
+  the arena is reused rather than grown without bound.
+- bumpalo does not free individual allocations and does NOT run destructors on
+  `reset()`. Only put plain/POD per-frame data in it (`f32`, `V3`, `[f32; 5]`,
+  tuples). NEVER put anything that owns a heap resource into the bump.
+- For container types bumpalo has no arena version of (e.g. `HashMap`), keep a
+  **scratch pool**: a struct owning the container, alive outside the loop (or
+  inside `FrameBuffers`), passed by `&mut`, cleared in place (`clear()`) and
+  reused by each user in turn. Treat it as borrowable scratch, not storage.
+- **Fixed-capacity-by-construction** containers use **arrayvec**
+  (`ArrayVec<T, N>`, zero heap): e.g. the near-clip polygon and the quad corners.
+- Vault rlibs: `libbumpalo.rlib` (built with feature `collections`),
+  `libarrayvec.rlib`, `libsmallvec.rlib` (see /root/rustlib/MANIFEST). The Cargo
+  deps mirror these (bumpalo with `collections`, arrayvec).

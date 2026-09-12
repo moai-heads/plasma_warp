@@ -3,6 +3,9 @@
 // Rust, direct rustc, image vault per POLICY. Renders PNG frames for ffmpeg.
 use std::path::Path;
 use image::{ImageBuffer, Rgb};
+use bumpalo::Bump;
+use bumpalo::collections::Vec as BVec;
+use arrayvec::ArrayVec;
 
 const W: usize = 640;
 const H: usize = 360;
@@ -380,7 +383,9 @@ fn fill_tri_flat(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
                         let g = lam * 110.0;
                         [s0[0] * lam + g * 0.12, s1[1] * lam + g, s2[2] * lam + g * 0.45]
                     } else { [col.0, col.1, col.2] };
-                    let out: [u8; 3] = (0..3).map(|c| {
+                    // Fixed-size [u8;3] built without a heap allocation: the old
+                    // `.collect::<Vec<u8>>().try_into()` allocated a Vec PER PIXEL.
+                    let out: [u8; 3] = std::array::from_fn(|c| {
                         let o = old[c] as f32;
                         let s = cc[c].clamp(0.0, 255.0);
                         let v = match mode {
@@ -389,7 +394,7 @@ fn fill_tri_flat(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
                             Blend::Screen => 255.0 - (255.0 - o) * (255.0 - s * alpha) / 255.0,
                         };
                         v.clamp(0.0, 255.0) as u8
-                    }).collect::<Vec<u8>>().try_into().unwrap();
+                    });
                     img.put_pixel(x as u32, y as u32, Rgb(out));
                 }
             }
@@ -625,8 +630,8 @@ const NEAR_Z: f32 = 40.0;
 // interpolate ALL attributes (so UVs stay correct on the new edge). Returns the
 // surviving polygon (0..=previous_len+1 vertices). A polygon already in front of
 // the plane passes through unchanged, vertex-for-vertex.
-fn clip_poly_near(poly: &[[f32; 5]]) -> Vec<[f32; 5]> {
-    let mut out: Vec<[f32; 5]> = Vec::with_capacity(poly.len() + 2);
+fn clip_poly_near(poly: &[[f32; 5]]) -> ArrayVec<[f32; 5], 8> {
+    let mut out: ArrayVec<[f32; 5], 8> = ArrayVec::new();
     let n = poly.len();
     for i in 0..n {
         let a = poly[i];
@@ -692,9 +697,8 @@ fn draw_textured_quad_tint(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut 
     // fan-triangulate whatever polygon survives. When nothing is clipped (the
     // normal case) the fan yields exactly triangles (0,1,2) and (0,2,3) with the
     // same projected corners as before -> byte-identical output.
-    let quad: Vec<[f32; 5]> = (0..4)
-        .map(|i| [c[i].x, c[i].y, c[i].z, uvs[i].0, uvs[i].1])
-        .collect();
+    let mut quad: ArrayVec<[f32; 5], 4> = ArrayVec::new();
+    for i in 0..4 { quad.push([c[i].x, c[i].y, c[i].z, uvs[i].0, uvs[i].1]); }
     let poly = clip_poly_near(&quad);
     for ti in 1..poly.len().saturating_sub(1) {
         let vs = [poly[0], poly[ti], poly[ti + 1]];
@@ -797,13 +801,13 @@ fn cyberpuzzle_shape_amp() -> f32 {
 // < half a cell). Returns (positions, uvs); each uv is the planar projection of
 // the offset rest position -- this is what keeps the assembled image exact.
 // Index: gj*(cols+1)+gi.
-fn cyberpuzzle_vertices(cols: usize, rows: usize, qw: f32, qh: f32, amp: f32)
-    -> (Vec<V3>, Vec<(f32, f32)>) {
+fn cyberpuzzle_vertices<'a>(bump: &'a Bump, cols: usize, rows: usize, qw: f32, qh: f32, amp: f32)
+    -> (BVec<'a, V3>, BVec<'a, (f32, f32)>) {
     let cell = (qw / cols as f32).min(qh / rows as f32);
     let maxd = cell * amp;
     let nv = (cols + 1) * (rows + 1);
-    let mut pos = Vec::with_capacity(nv);
-    let mut uv = Vec::with_capacity(nv);
+    let mut pos = BVec::with_capacity_in(nv, bump);
+    let mut uv = BVec::with_capacity_in(nv, bump);
     for gj in 0..=rows {
         for gi in 0..=cols {
             let x = -qw * 0.5 + qw * (gi as f32) / (cols as f32);
@@ -824,7 +828,7 @@ fn cyberpuzzle_vertices(cols: usize, rows: usize, qw: f32, qh: f32, amp: f32)
     (pos, uv)
 }
 
-fn frame_cyberpuzzle(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
+fn frame_cyberpuzzle(bump: &Bump, img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
                      tex: &Tex, back_tex: &Tex, st: f32, _gt: f32, beat: &BeatSync) {
     clear_image(img);
     depth.fill(f32::INFINITY);
@@ -834,7 +838,8 @@ fn frame_cyberpuzzle(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
     let fly_dur = CYBERPUZZLE_FLY_DUR;
     // ---- SNARE-SYNCED CHOREOGRAPHY ----------------------------------------
     // Scene-local snare schedule (same mapping the other scenes use).
-    let mut ls: Vec<f32> = beat.beats.iter().map(|&b| (b - 32.0).rem_euclid(beat.span)).collect();
+    let mut ls: BVec<f32> = BVec::from_iter_in(
+        beat.beats.iter().map(|&b| (b - 32.0).rem_euclid(beat.span)), bump);
     ls.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let snare_at_or_after = |t: f32| ls.iter().cloned().find(|&b| b >= t - 1e-4);
     let snare_after = |t: f32| ls.iter().cloned().find(|&b| b > t + 1e-4);
@@ -848,7 +853,8 @@ fn frame_cyberpuzzle(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
     let jiggle_start = snare_after(assembly_end).unwrap_or(assembly_end + 0.5);
     // (3) Flip on the SECOND snare after the jiggle starts -- one snare is spent
     // jiggling in between, then the next one triggers the 180-deg reveal.
-    let after_jiggle: Vec<f32> = ls.iter().cloned().filter(|&b| b > jiggle_start + 1e-4).collect();
+    let after_jiggle: BVec<f32> = BVec::from_iter_in(
+        ls.iter().cloned().filter(|&b| b > jiggle_start + 1e-4), bump);
     let flip_start = after_jiggle.get(1).copied()
         .or_else(|| after_jiggle.first().copied())
         .unwrap_or(jiggle_start + 1.0);
@@ -879,7 +885,7 @@ fn frame_cyberpuzzle(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
         else { dance_amp * (std::f32::consts::PI * (st - jiggle_start) / HIHAT_DT).sin() };
     // ONE shared mesh; pieces are index windows into it, so shared boundary
     // vertices (and their uvs) are literally the same points -> watertight.
-    let (vpos, vuv) = cyberpuzzle_vertices(cols, rows, qw, qh, amp);
+    let (vpos, vuv) = cyberpuzzle_vertices(bump, cols, rows, qw, qh, amp);
     let vidx = |gi: usize, gj: usize| gj * (cols + 1) + gi;
     let center = V3::new(0.0, 0.0, CAM_D);
     let force_s: Option<f32> = std::env::var("CYBERPUZZLE_FORCE_S").ok().and_then(|v| v.parse().ok());
@@ -974,21 +980,22 @@ fn frame_cyberpuzzle(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
     }
 }
 
-fn frame_tri(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
+fn frame_tri(bump: &Bump, img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
              ts: &Tex, tb: &Tex, st: f32, gt: f32, punch: f32, kick: f32, beat: &BeatSync) {
     clear_image(img);
     depth.fill(f32::INFINITY);
     // scene-local snare schedule: global beats mapped into scene time (mod song span)
     let start: f32 = 16.0; // scene 2 begins at demo t=16s
-    let mut ls: Vec<f32> = beat.beats.iter().map(|&b| (b - start).rem_euclid(beat.span)).collect();
+    let mut ls: BVec<f32> = BVec::from_iter_in(
+        beat.beats.iter().map(|&b| (b - start).rem_euclid(beat.span)), bump);
     ls.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let pumped: usize = ls.iter().filter(|&&b| b <= st).count();
     let drop_t = ls[2]; // mesh drops ON the 3rd snare
     // explosion schedule: once transparent, the mesh syncs exactly 4 more
     // times; on the 4th it explodes into shards.
     let fade_done = (ls[6] - drop_t) + 0.5;
-    let tsyncs: Vec<f32> = ls.iter().map(|&b| b - drop_t)
-        .filter(|&b| b > fade_done).take(4).collect();
+    let tsyncs: BVec<f32> = BVec::from_iter_in(
+        ls.iter().map(|&b| b - drop_t).filter(|&b| b > fade_done).take(4), bump);
     let explode_t = tsyncs.get(3).copied().unwrap_or(9.0);
     let t_x = st - (drop_t + explode_t);
     const SHARD_T: f32 = 1.6;
@@ -1102,7 +1109,7 @@ fn frame_tri(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
 
 // ---------------- Scene dispatch ----------------
 
-fn frame_for(fb: &mut FrameBuffers, slot: BufferSlot, scene: Scene,
+fn frame_for(bump: &Bump, fb: &mut FrameBuffers, slot: BufferSlot, scene: Scene,
              texs: &[&Tex; 5], blurs: &[&Tex; 5],
              t0: usize, t1: usize, st: f32, gt: f32, mix: f32, punch: f32, beat: &BeatSync)
 {
@@ -1118,8 +1125,8 @@ fn frame_for(fb: &mut FrameBuffers, slot: BufferSlot, scene: Scene,
             };
             frame_rotozoom(img, texs[t0], blurs[t0], texs[t1], blurs[t1], gt, mix, p)
         }
-        Scene::TriangleDance => frame_tri(img, &mut fb.depth, texs[2], blurs[2], st, gt, punch, beat.punch_kick(gt), beat), // blue bg; mesh=snare, bg=kick
-        Scene::CyberPuzzle => frame_cyberpuzzle(img, &mut fb.depth, texs[3], texs[4], st, gt, beat), // front=tex_scene3, back=tex_scene4
+        Scene::TriangleDance => frame_tri(bump, img, &mut fb.depth, texs[2], blurs[2], st, gt, punch, beat.punch_kick(gt), beat), // blue bg; mesh=snare, bg=kick
+        Scene::CyberPuzzle => frame_cyberpuzzle(bump, img, &mut fb.depth, texs[3], texs[4], st, gt, beat), // front=tex_scene3, back=tex_scene4
     }
 }
 
@@ -1226,7 +1233,7 @@ fn scene_segs(scene: Scene) -> [usize; 2] {
 // scene math and handoff fades, but driven by wall-clock time instead of a
 // frame counter.
 #[allow(dead_code)]
-fn timeline_frame(fb: &mut FrameBuffers, sd: &SceneData, texs: &[&Tex; 5], blurs: &[&Tex; 5], t: f32)
+fn timeline_frame(bump: &Bump, fb: &mut FrameBuffers, sd: &SceneData, texs: &[&Tex; 5], blurs: &[&Tex; 5], t: f32)
 {
     let total: f32 = sd.timeline.last().map(|(_, s, d)| s + d).unwrap_or(SEG_SECS).max(0.001);
     let t = t.rem_euclid(total);
@@ -1243,7 +1250,7 @@ fn timeline_frame(fb: &mut FrameBuffers, sd: &SceneData, texs: &[&Tex; 5], blurs
     let segs = scene_segs(scene);
     let (t0, t1) = (segs[sj], segs[1 - sj]);
     let punch = sd.beat.punch(gt);
-    frame_for(fb, BufferSlot::Primary, scene, texs, blurs, t0, t1, st, gt, tex_mix, punch, &sd.beat);
+    frame_for(bump, fb, BufferSlot::Primary, scene, texs, blurs, t0, t1, st, gt, tex_mix, punch, &sd.beat);
     if gt < FADE_SECS { fade(&mut fb.image, smooth(gt / FADE_SECS)); }
     match scene {
         Scene::Rotozoom => {
@@ -1264,7 +1271,7 @@ fn timeline_frame(fb: &mut FrameBuffers, sd: &SceneData, texs: &[&Tex; 5], blurs
 //   demo_fade_in : global black fade-in (only when this entry opens the demo)
 //   fade_out     : fade to black at end (handoff to the next scene)
 //   wrap         : dissolve back into the first scene at the very end (loop)
-fn render_range(scene: Scene, start: f32, dur: f32,
+fn render_range(bump: &mut Bump, scene: Scene, start: f32, dur: f32,
                 texs: &[&Tex; 5], blurs: &[&Tex; 5], beat: &BeatSync,
                 demo_fade_in: bool, fade_out: bool, wrap: bool, idx0: usize)
     -> usize
@@ -1287,7 +1294,7 @@ fn render_range(scene: Scene, start: f32, dur: f32,
         let t0 = segs[sj];
         let t1 = segs[1 - sj];
         let punch = beat.punch(gt);
-        frame_for(&mut fb, BufferSlot::Primary, scene, texs, blurs, t0, t1, st, gt, tex_mix, punch, beat);
+        frame_for(&*bump, &mut fb, BufferSlot::Primary, scene, texs, blurs, t0, t1, st, gt, tex_mix, punch, beat);
 
         // global demo fade-in from black (entry that opens the demo)
         if demo_fade_in && gt < FADE_SECS {
@@ -1308,13 +1315,14 @@ fn render_range(scene: Scene, start: f32, dur: f32,
                 }
                 if wrap && f >= total - d {
                     let k = smooth((f - (total - d)) as f32 / d as f32);
-                    frame_for(&mut fb, BufferSlot::Scratch, Scene::Rotozoom, texs, blurs, 0, 1, st, gt, 0.0, beat.punch(gt), beat);
+                    frame_for(&*bump, &mut fb, BufferSlot::Scratch, Scene::Rotozoom, texs, blurs, 0, 1, st, gt, 0.0, beat.punch(gt), beat);
                     mix_frames(&mut fb.image, &fb.scratch, k);
                 }
             }
             Scene::CyberPuzzle => {}
         }
         fb.image.save(format!("{}/f{:05}.png", frames_dir(), idx)).unwrap();
+        bump.reset();   // all bump scratch for this frame is done
         idx += 1;
         f += 1;
     }
@@ -1366,6 +1374,7 @@ fn main() {
     let sd = SceneData::load();
     let texs = sd.tex_refs();
     let blurs = sd.blur_refs();
+    let mut bump = Bump::new();   // single per-frame arena scratch (see AGENTS 11)
     std::fs::create_dir_all(frames_dir()).expect("create frames dir");
     let out = frames_dir();
     let mode = if arg1.is_empty() { "demo" } else { arg1 };
@@ -1374,7 +1383,7 @@ fn main() {
     if mode == "tframe" {
         let t: f32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.0);
         let mut fb = FrameBuffers::new();
-        timeline_frame(&mut fb, &sd, &texs, &blurs, t);
+        timeline_frame(&bump, &mut fb, &sd, &texs, &blurs, t);
         fb.image.save(format!("{}/tframe.png", frames_dir())).unwrap();
         eprintln!("TFRAME t={:.4}s -> {}/tframe.png", t, out);
         return;
@@ -1388,7 +1397,7 @@ fn main() {
         let (scene, start, dur) = *sd.timeline.iter().find(|(s, _, _)| *s == sc)
             .unwrap_or_else(|| panic!("scene not in timeline"));
         eprintln!("DEV MODE: {:?} | demo-timeline start {:.3}s, dur {:.1}s", scene, start, dur);
-        let n = render_range(scene, start, dur, &texs, &blurs, &sd.beat, start == 0.0, false, false, 0);
+        let n = render_range(&mut bump, scene, start, dur, &texs, &blurs, &sd.beat, start == 0.0, false, false, 0);
         eprintln!("ALL FRAMES DONE ({}) -> {}/", n, out);
         eprintln!("AUDIO_OFFSET={:.3}", start % SONG_LEN);
     } else {
@@ -1397,7 +1406,7 @@ fn main() {
         for (i, &(scene, start, dur)) in sd.timeline.iter().enumerate() {
             let last = i == sd.timeline.len() - 1;
             eprintln!("DEMO: scene {:?} @ {:.1}s", scene, start);
-            idx = render_range(scene, start, dur, &texs, &blurs, &sd.beat,
+            idx = render_range(&mut bump, scene, start, dur, &texs, &blurs, &sd.beat,
                                start == 0.0, !last, last, idx);
         }
         eprintln!("ALL FRAMES DONE ({}) -> {}/", idx, out);
@@ -1501,6 +1510,7 @@ mod realtime {
         let mut next_frame = Instant::now();
         let mut frames: u64 = 0;
         let mut fb = FrameBuffers::new();
+        let mut bump = Bump::new();   // single per-frame arena scratch (see AGENTS 11)
 
         'running: loop {
             for ev in events.poll_iter() {
@@ -1528,8 +1538,9 @@ mod realtime {
             }
 
             let t = base + epoch.elapsed().as_secs_f32();
-            timeline_frame(&mut fb, sd, &texs, &blurs, t);
+            timeline_frame(&bump, &mut fb, sd, &texs, &blurs, t);
             let _ = tex.update(None, fb.image.as_raw(), (W * 3) as usize);
+            bump.reset();   // all bump scratch for this frame is done
 
             canvas.set_draw_color(Color::RGB(0, 0, 0));
             canvas.clear();
