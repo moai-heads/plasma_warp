@@ -889,6 +889,7 @@ fn draw_laser_beams(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, st: f32) {
 const BG_PYRAMID_COUNT: usize = 12;
 const BG_PYRAMID_MIN_RADIUS: f32 = 10.0;   // apparent half-size on screen, px
 const BG_PYRAMID_MAX_RADIUS: f32 = 32.0;
+const BG_PYRAMID_LAUNCH_GAP: f32 = 0.15; // s between successive pyramid entrances
 const BG_PYRAMID_MIN_SPEED: f32 = 220.0;   // screen px / second, right -> left
 const BG_PYRAMID_MAX_SPEED: f32 = 800.0;
 
@@ -904,7 +905,16 @@ fn draw_background_pyramids(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut
         let screen_y = (0.12 + 0.76 * hash01(s, 0, 34.0)) * H as f32;
         // horizontal loop span: from just off the RIGHT edge to just off the LEFT
         let half_span = 0.5 * W as f32 + radius + 80.0;
-        let phase = hash01(s, 0, 35.0) * 2.0 * half_span;
+        // Staggered entrance from the RIGHT edge. Pyramid k only appears at
+        // t = k*GAP; its phase is chosen so that AT that instant `travel == 0`,
+        // i.e. it sits exactly at the RIGHT edge (screen_x = CX + half_span),
+        // and from there slides LEFT. So the field streams in from the right one
+        // after another instead of popping in scattered across the screen. The
+        // same `mod 2*half_span` makes each one re-enter from the right when it
+        // wraps round the left, so the loop also re-enters gradually.
+        let launch = s as f32 * BG_PYRAMID_LAUNCH_GAP;
+        if t < launch { continue; }
+        let phase = (-speed * launch).rem_euclid(2.0 * half_span);
         let travel = (speed * t + phase).rem_euclid(2.0 * half_span);
         let screen_x = (0.5 * W as f32 + half_span) - travel;   // right -> left, wraps at the left
         // 3D tumble about the pyramid's own origin (yaw about Y, pitch about X)

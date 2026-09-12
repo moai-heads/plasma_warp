@@ -262,11 +262,19 @@ format conservatively up front: keep fences short and self-contained.
 - BLENDING: ADDITIVE (`additive=true` -> `Blend::Add`, alpha 0.5, no depth write),
   so overlapping pyramids and the laser beams accumulate as glow; the
   `color_override` still pins red/orange. Apparent size 10..32 px, screen speed 220..800 px/s.
-- LOOPING (right -> left): screen_x = `(CX + half_span) - (speed*t + phase) mod
-  2*half_span`, with `half_span` = a full screen width + the pyramid's own radius
-  + a margin. A pyramid rides from just OFF the right edge to just OFF the left
-  edge, then wraps and slides back IN from beyond the right edge -- it re-enters
-  gradually, it does not pop in mid-screen.
+- LOOPING (right -> left): screen_x = `(CX + half_span) - travel`, travel =
+  `(speed*t + phase) mod 2*half_span`, with `half_span` = a full screen width +
+  the pyramid's own radius + a margin. A pyramid rides from just OFF the right
+  edge to just OFF the left edge, then wraps and slides back IN from beyond the
+  right edge -- it re-enters gradually, it does not pop in mid-screen.
+- ENTRANCE (only pyramids; the beams are unchanged/fine): pyramid k does not
+  appear until `t = k * BG_PYRAMID_LAUNCH_GAP` (0.15 s), and its `phase` is set to
+  `(-speed*launch) mod 2*half_span` so that AT that instant `travel == 0`, i.e. it
+  sits exactly at the RIGHT edge and then slides LEFT. So when the background
+  begins the field STREAMS IN from the right, one pyramid after another, instead
+  of popping in scattered across the screen. (Earlier this was done with a
+  full-screen right-to-left wipe, but that also masked the beams, so it was
+  replaced by this per-pyramid entrance.)
 - DEPTH: draw_pyramid writes the depth buffer on its own `~2.4` scale (the
   MenInBlack convention), whereas the puzzle pieces use view-space depth `~1000`.
   The two MUST NOT mix, so `frame_cyberpuzzle` CLEARS the depth buffer
