@@ -511,38 +511,75 @@ fn project(p: V3) -> (f32, f32, f32) { // -> screen x, screen y, 1/z
     (CX_PX + CAM_F * p.x * iz, CY_PX - CAM_F * p.y * iz, iz)
 }
 
-// Perspective-correct textured triangle. Screen-space barycentrics interpolate
-// (u/z, v/z, 1/z); the divide by interpolated 1/z reconstructs correct u,v.
-// lam = flat per-face lighting. Depth test on view-space z (smaller = closer).
+// Perspective-correct textured triangle (software rasterizer).
+//
+// Why the math looks like this: the projection is a divide-by-z, which does NOT
+// preserve barycentric ratios. The weights below (w0,w1,w2) are SCREEN-space
+// barycentrics. To recover a correct surface attribute we must first convert
+// them to true 3D barycentrics a_i = (w_i/z_i) / (sum_j w_j/z_j); that lone 1/z_i
+// is the only difference between the two. So every affine attribute is blended
+// as "sum w_i * attr_i / z_i" and then divided by the interpolated "sum w_i / z_i".
+// That same reciprocal depth (1/z) is what interpolates linearly in screen space,
+// which is why it drives BOTH the depth buffer and the texture sampler.
+//
+// lam = flat per-face lighting (computed per quad upstream). Depth test on
+// view-space z (smaller = closer).
 #[allow(clippy::too_many_arguments)]
 fn raster_tex_tri(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
                   sx: [f32; 3], sy: [f32; 3],
                   u: [f32; 3], v: [f32; 3], invz: [f32; 3],
                   tex: &Tex, lam: f32) {
+    // Twice the SIGNED area of the triangle in screen space (cross product of
+    // two edges). Sign encodes winding, so it works for either direction; we
+    // just need it nonzero. area ~ 0 => triangle collapsed to a line/point
+    // (a quad seen exactly edge-on, e.g. mid-flip): nothing to draw, bail out.
     let area = (sx[1] - sx[0]) * (sy[2] - sy[0]) - (sy[1] - sy[0]) * (sx[2] - sx[0]);
     if area.abs() < 1e-9 { return; }
+    // Hoisted out of the pixel loops: the normalizer that turns raw per-pixel
+    // edge-function AREAS (units of px^2) into dimensionless barycentric
+    // FRACTIONS summing to 1. Signed divide cancels the winding sign too.
     let inva = 1.0 / area;
+
+    // Bounding box of the triangle, clamped to the framebuffer. Only these
+    // pixels can possibly be inside, so only these are scanned.
     let minx = sx.iter().cloned().fold(f32::MAX, f32::min).floor().max(0.0) as i32;
     let maxx = sx.iter().cloned().fold(f32::MIN, f32::max).ceil().min((W - 1) as f32) as i32;
     let miny = sy.iter().cloned().fold(f32::MAX, f32::min).floor().max(0.0) as i32;
     let maxy = sy.iter().cloned().fold(f32::MIN, f32::max).ceil().min((H - 1) as f32) as i32;
     for py in miny..=maxy {
         for px in minx..=maxx {
+            // Sample at the pixel CENTER (+0.5), not its top-left corner.
             let fxp = px as f32 + 0.5;
             let fyp = py as f32 + 0.5;
+
+            // Screen-space barycentric weights of this pixel. edge(i,j,pixel)
+            // is twice the signed area of triangle (i,j,pixel); * inva turns it
+            // into the fraction of the whole triangle, i.e. w for the opposite
+            // vertex. w2 comes free from w0+w1+w2 == 1 (sum-to-one property).
             let w0 = ((sx[1] - fxp) * (sy[2] - fyp) - (sy[1] - fyp) * (sx[2] - fxp)) * inva;
             let w1 = ((sx[2] - fxp) * (sy[0] - fyp) - (sy[2] - fyp) * (sx[0] - fxp)) * inva;
             let w2 = 1.0 - w0 - w1;
+            // Inside test: all three weights >= 0 <=> pixel is inside the tri.
             if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 { continue; }
+
+            // Interpolate reciprocal depth 1/z (the screen-linear quantity;
+            // z itself is not). This same value is reused as the perspective
+            // denominator for the UVs below.
             let iz = w0 * invz[0] + w1 * invz[1] + w2 * invz[2];
-            if iz <= 0.0 { continue; }
-            let z = 1.0 / iz;
+            if iz <= 0.0 { continue; }          // through/behind the eye: skip
+            let z = 1.0 / iz;                    // back to real view-space depth
+
             let idx = py as usize * W + px as usize;
-            if z < depth[idx] {
+            if z < depth[idx] {                  // z-buffer: smaller z = closer
                 depth[idx] = z;
+                // Perspective-correct UV. Interpolate u/z and v/z (linear in
+                // screen space), then divide by interpolated 1/z (= iz) to undo
+                // the foreshortening: u = (sum w_i*u_i/z_i) / (sum w_i/z_i).
+                // At a vertex this returns exactly that vertex's u,v.
                 let uu = ((w0 * u[0] * invz[0] + w1 * u[1] * invz[1] + w2 * u[2] * invz[2]) / iz).clamp(0.0, 1.0);
                 let vv = ((w0 * v[0] * invz[0] + w1 * v[1] * invz[1] + w2 * v[2] * invz[2]) / iz).clamp(0.0, 1.0);
                 let c = tex.sample_clamp(uu, vv);
+                // Flat per-face lighting: scale the texel by lam.
                 img.put_pixel(px as u32, py as u32, Rgb([
                     (c[0] * lam).clamp(0.0, 255.0) as u8,
                     (c[1] * lam).clamp(0.0, 255.0) as u8,
