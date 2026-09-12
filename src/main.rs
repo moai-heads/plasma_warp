@@ -803,10 +803,72 @@ fn cyberpuzzle_vertices<'a>(bump: &'a Bump, cols: usize, rows: usize, qw: f32, q
     (pos, uv)
 }
 
+// ---- background laser beams -------------------------------------------------
+// Horizontal red beams across the WHOLE screen width that spawn at a random
+// vertical position, expand vertically, then fade out. The vertical profile is
+// a gradient: an almost-white red core in the middle, pure red further out, and
+// fully transparent at the expanding edge. Blending is ADDITIVE over the black
+// background, which is exactly what makes the transparent outer edge vanish.
+//
+// Spawn cadence is fixed by time (scene-local `st`), and every beam property is
+// hashed from its index, so the result is deterministic and render-reproducible
+// (no wall-clock RNG). SPAWN_INTERVAL < LIFETIME/3 guarantees at least 3 beams
+// are on screen at once.
+const LASER_BEAM_LIFETIME: f32 = 0.40;        // spawn -> expand -> fade, total
+const LASER_BEAM_SPAWN_INTERVAL: f32 = 0.12;  // < lifetime/3 => >= 3 overlap
+const LASER_BEAM_EXPAND_SECS: f32 = 0.15;     // vertical growth time
+const LASER_BEAM_HOLD_SECS: f32 = 0.22;       // full height until here, then fade
+
+fn draw_laser_beams(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, st: f32) {
+    let interval = LASER_BEAM_SPAWN_INTERVAL;
+    let newest = (st / interval).floor() as i64;
+    let oldest = ((st - LASER_BEAM_LIFETIME) / interval).ceil() as i64;
+    for k in oldest..=newest {
+        if k < 0 { continue; }
+        let age = st - k as f32 * interval;
+        if age < 0.0 || age >= LASER_BEAM_LIFETIME { continue; }
+        let seed = k as usize;
+        // randomized spawn height (+ thickness + brightness) per beam index
+        let center_y = (0.10 + 0.80 * hash01(seed, 0, 21.0)) * H as f32;
+        let max_half = 6.0 + 30.0 * hash01(seed, 0, 22.0);
+        let gain = 0.55 + 0.60 * hash01(seed, 0, 23.0);
+        // vertical expansion, then fade-out
+        let expand = smooth((age / LASER_BEAM_EXPAND_SECS).clamp(0.0, 1.0));
+        let fade = if age <= LASER_BEAM_HOLD_SECS { 1.0 } else {
+            1.0 - smooth(((age - LASER_BEAM_HOLD_SECS)
+                          / (LASER_BEAM_LIFETIME - LASER_BEAM_HOLD_SECS)).clamp(0.0, 1.0))
+        };
+        let intensity = gain * fade;
+        let half = max_half * expand;
+        if half < 0.5 { continue; }
+        let y_lo = (center_y - half).floor().max(0.0) as usize;
+        let y_hi = (center_y + half).ceil().min((H - 1) as f32) as usize;
+        for y in y_lo..=y_hi {
+            // normalized distance from the beam center line: 0 core .. 1 edge
+            let t = ((y as f32 - center_y).abs() / half).min(1.0);
+            let core = (1.0 - t) * (1.0 - t);   // brightness: white-red core -> 0
+            let white = core * core;             // extra whitening near the center
+            let add_r = 255.0 * intensity * core;
+            let add_g = 255.0 * intensity * white * 0.80;
+            let add_b = 255.0 * intensity * white * 0.82;
+            for x in 0..W {
+                let p = img.get_pixel(x as u32, y as u32);
+                let r = (p[0] as f32 + add_r).min(255.0) as u8;
+                let g = (p[1] as f32 + add_g).min(255.0) as u8;
+                let b = (p[2] as f32 + add_b).min(255.0) as u8;
+                img.put_pixel(x as u32, y as u32, Rgb([r, g, b]));
+            }
+        }
+    }
+}
+
 fn frame_cyberpuzzle(bump: &Bump, img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
                      tex: &Tex, back_tex: &Tex, st: f32, _gt: f32, beat: &BeatSync) {
     clear_image(img);
     depth.fill(f32::INFINITY);
+    // background layer: red laser beams (drawn behind the pieces; the pieces
+    // depth-test in front of them and cutouts show them through)
+    draw_laser_beams(img, st);
     let (cols, rows) = cyberpuzzle_grid();
     let (qw, qh) = fit_letterbox(tex.w as f32, tex.h as f32);
     let amp_base = cyberpuzzle_shape_amp();

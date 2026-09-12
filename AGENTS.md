@@ -205,3 +205,20 @@ format conservatively up front: keep fences short and self-contained.
   are affected — currently the CyberPuzzle BACK texture (tex_scene4, ~40%
   transparent), so the 180-deg flip now reveals the background through the holes
   instead of drawing the lavender fill under the transparent region.
+
+## 15. CyberPuzzle background — laser beams
+- The CyberPuzzle background is drawn FIRST, right after `clear_image`/
+  `depth.fill`, before any puzzle piece: `draw_laser_beams(img, st)`.
+- Effect: horizontal RED beams spanning the FULL screen width. Each beam is
+  hashed off its spawn index, so its vertical position (+ thickness + gain) is
+  randomized but DETERMINISTIC — renders are reproducible, no wall-clock RNG.
+- Life cycle, total `LASER_BEAM_LIFETIME = 0.40 s`: expand vertically over
+  `LASER_BEAM_EXPAND_SECS = 0.15`, hold to `LASER_BEAM_HOLD_SECS = 0.22`, then
+  fade out to 0. Spawn every `LASER_BEAM_SPAWN_INTERVAL = 0.12 s`, which is
+  `< lifetime/3` so AT LEAST 3 beams are alive at any instant.
+- Vertical profile is a gradient: almost-white red core -> pure red -> fully
+  transparent at the expanding edge. Blending is ADDITIVE over the black
+  background, which is what makes the outer edge disappear cleanly.
+- The beams live BEHIND the puzzle: the pieces depth-test in front of them
+  (§12), and where the revealed back texture is cut out (§14) the beams show
+  through. They are also visible in the black letterbox margins on each side.
