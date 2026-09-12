@@ -260,8 +260,7 @@ format conservatively up front: keep fences short and self-contained.
   `(1.0,0.48,0.09)`). Deterministic, no wall-clock RNG, like the beams.
 - BLENDING: ADDITIVE (`additive=true` -> `Blend::Add`, alpha 0.5, no depth write),
   so overlapping pyramids and the laser beams accumulate as glow; the
-  `color_override` still pins red/orange. Apparent size 10..32 px (halved),
-  screen speed 110..400 px/s (doubled).
+  `color_override` still pins red/orange. Apparent size 10..32 px, screen speed 220..800 px/s.
 - LOOPING (right -> left): screen_x = `(CX + half_span) - (speed*t + phase) mod
   2*half_span`, with `half_span` = a full screen width + the pyramid's own radius
   + a margin. A pyramid rides from just OFF the right edge to just OFF the left

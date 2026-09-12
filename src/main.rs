@@ -889,8 +889,8 @@ fn draw_laser_beams(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, st: f32) {
 const BG_PYRAMID_COUNT: usize = 12;
 const BG_PYRAMID_MIN_RADIUS: f32 = 10.0;   // apparent half-size on screen, px
 const BG_PYRAMID_MAX_RADIUS: f32 = 32.0;
-const BG_PYRAMID_MIN_SPEED: f32 = 110.0;   // screen px / second, right -> left
-const BG_PYRAMID_MAX_SPEED: f32 = 400.0;
+const BG_PYRAMID_MIN_SPEED: f32 = 220.0;   // screen px / second, right -> left
+const BG_PYRAMID_MAX_SPEED: f32 = 800.0;
 
 fn draw_background_pyramids(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32], t: f32) {
     if t < 0.0 { return; }
