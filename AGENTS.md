@@ -219,6 +219,11 @@ format conservatively up front: keep fences short and self-contained.
 - Vertical profile is a gradient: almost-white red core -> pure red -> fully
   transparent at the expanding edge. Blending is ADDITIVE over the black
   background, which is what makes the outer edge disappear cleanly.
+- The beams BEGIN only after the 180-degree flip is COMPLETE: the scene computes
+  `beam_start = flip_start + CYBERPUZZLE_FLIP_DUR` and passes the elapsed time
+  (`st - beam_start`) to `draw_laser_beams`, which returns early (no spawn, k<0
+  guard) while that is negative. So no beam is drawn during the fly-in, assembly,
+  jiggle, or the flip itself.
 - The beams live BEHIND the puzzle: the pieces depth-test in front of them
   (§12), and where the revealed back texture is cut out (§14) the beams show
   through. They are also visible in the black letterbox margins on each side.

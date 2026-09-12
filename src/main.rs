@@ -866,9 +866,6 @@ fn frame_cyberpuzzle(bump: &Bump, img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth
                      tex: &Tex, back_tex: &Tex, st: f32, _gt: f32, beat: &BeatSync) {
     clear_image(img);
     depth.fill(f32::INFINITY);
-    // background layer: red laser beams (drawn behind the pieces; the pieces
-    // depth-test in front of them and cutouts show them through)
-    draw_laser_beams(img, st);
     let (cols, rows) = cyberpuzzle_grid();
     let (qw, qh) = fit_letterbox(tex.w as f32, tex.h as f32);
     let amp_base = cyberpuzzle_shape_amp();
@@ -937,6 +934,12 @@ fn frame_cyberpuzzle(bump: &Bump, img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth
     let flip_t = ((st - flip_start) / CYBERPUZZLE_FLIP_DUR).clamp(0.0, 1.0);
     let yaw = std::f32::consts::PI * smooth(flip_t);
     let reveal = st >= flip_start;
+    // background layer: red laser beams. Drawn BEFORE the pieces so the puzzle
+    // depth-tests in front of them and cutouts show them through. They begin only
+    // once the 180-degree flip is COMPLETE: `beam_local` is 0 at flip_end and may
+    // go negative before that, in which case no beam spawns (guarded in k>=0).
+    let beam_start = flip_start + CYBERPUZZLE_FLIP_DUR;
+    draw_laser_beams(img, st - beam_start);
     for j in 0..rows {
         for i in 0..cols {
             // the piece's four SHARED corners, in [TL, TR, BR, BL] order
