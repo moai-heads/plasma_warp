@@ -164,3 +164,18 @@ format conservatively up front: keep fences short and self-contained.
 - Vault rlibs: `libbumpalo.rlib` (built with feature `collections`),
   `libarrayvec.rlib`, `libsmallvec.rlib` (see /root/rustlib/MANIFEST). The Cargo
   deps mirror these (bumpalo with `collections`, arrayvec).
+
+## 12. Depth-test convention — depth MUST be view-space distance
+- Both rasterizers test `z < depth[idx]` with the buffer initialized to
+  `f32::INFINITY`, so **smaller z = nearer**. Therefore the `dz`/`invz` passed
+  in must be a *view-space distance to the camera*, never a raw object/model
+  coordinate that only happens to be z-ish.
+- `raster_tex_tri` (CyberPuzzle) already obeys this: it stores real view depth
+  `z = 1/(1/z)`.
+- `draw_pyramid` (MenInBlack) projects with `scale/(persp - p.z)`, i.e. the
+  camera sits at `z = +persp` looking down `-z`, so view distance is
+  `persp - z_rotated`. It passes `persp - rv[k].2` to `fill_tri_flat`. Passing
+  the raw `rv[k].2` (done until 2026-09-12) INVERTED the test — the buffer kept
+  the farthest face, so back faces drew over front faces, reading as "double
+  layered" triangles (most visible in the transparent glass phase). If you add
+  a mesh, convert your vertex depth to view distance before handing it over.

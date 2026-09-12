@@ -460,7 +460,12 @@ fn draw_pyramid(img: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, depth: &mut [f32],
                       else { Surface::Solid { base } };
         let p = [proj(rv[i0]), proj(rv[i1]), proj(rv[i2])];
         let mode = if refract { Blend::Add } else { Blend::Alpha };
-        fill_tri_flat(img, depth, p, [rv[i0].2, rv[i1].2, rv[i2].2],
+        // Depth is the VIEW-SPACE distance to the camera, so smaller = nearer.
+        // The camera sits at z=+persp and looks down -z, hence view depth is
+        // (persp - z_rotated). Passing raw z_rotated here (as before) inverted
+        // the test: the rasterizer keeps the SMALLEST dz, i.e. the FARTHEST
+        // face, so back faces drew over front faces -> visible "double layer".
+        fill_tri_flat(img, depth, p, [persp - rv[i0].2, persp - rv[i1].2, persp - rv[i2].2],
                       surface, lam, off, 0.15, alpha, mode);
     }
 }
