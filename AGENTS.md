@@ -294,10 +294,23 @@ format conservatively up front: keep fences short and self-contained.
 - A realtime glitch pass on the FINISHED frame, after the scene + its fades, in
   BOTH paths: `timeline_frame` (realtime) and `render_range` (headless). Same
   function, same inputs, so video == realtime.
-- Effects, all from the mosh/datamosh family and all reading a snapshot
-  (`fb.scratch`) so they don't smear their own output:
-  - `apply_scanline_drift` — per-scanline horizontal drift (smooth animated wave
-    + hashed jitter on a random subset of rows).
+- **CONTROL SURFACE — source constants only, NO env vars.** Every effect has an
+  `*_ENABLED` flag and its numeric params live as `const`s in one labelled block
+  at the top of the glitch section ("GLITCH TUNING KNOBS"), plus a master
+  `GLITCH_ENABLED`. To try a combination or switch an effect off, edit a flag /
+  number in source (same philosophy as the scene-select / TIMELINE constants);
+  nothing else changes. `glitch_intensity` returns 0 when `GLITCH_ENABLED` is
+  false, so the pass is skipped entirely.
+- Effects, all from the mosh/datamosh family:
+  - `apply_scanline_drift` — FULL-scanline horizontal drift (smooth animated wave
+    + hashed jitter on a random subset of rows); every channel of a row moves
+    together, luma included. THE "UV WARP". Restored from revision 2aa8ab8 at
+    `GLITCH_SCANLINE_DRIFT_WAVE = 48.0` / `JITTER = 44.0` because it read as more
+    intense than the chroma-only variant; ON by default.
+  - `apply_chroma_scanline_warp` — the same wave/jitter shape applied to the
+    CHROMA channels only (red one way, blue the other, green/luma untouched), so
+    brightness holds still while colour smears. Softer; OFF by default, kept
+    available as an alternative UV warp.
   - `apply_block_displacement` — hashed rectangles copied from elsewhere
     (codec-corruption bands).
   - `apply_luminance_pixel_sort` — contiguous high-luma runs on a hashed subset
@@ -310,11 +323,13 @@ format conservatively up front: keep fences short and self-contained.
     (separate chroma shift).
   - `apply_posterize` — quantise every channel to a small number of levels
     (level count falls from 48 toward 4 as `amount` rises). Applied LAST.
-  - COMPOSITION: block-displacement and pixel-sort read the CLEAN snapshot
-    (`fb.scratch`); the chroma warp, smear and posterize then run IN PLACE on the
-    already-glitched frame (via the `glitch_row` scratch) so they layer instead
-    of overwriting. (Original bug: an in-place pass read the clean snapshot for
-    every pixel and wiped everything before it.)
+  - COMPOSITION / ORDER in `apply_pixel_glitch`: Group A reads the CLEAN snapshot
+    (`fb.scratch`) — scanline-drift (uv warp), then block-displacement, then
+    pixel-sort — so those overwrite the regions they touch; Group B then runs IN
+    PLACE on the already-glitched frame (via the `glitch_row` scratch) so chroma
+    warp, smear and posterize LAYER instead of overwriting. Each call is guarded
+    by its `*_ENABLED` knob. (Original bug: an in-place pass read the clean
+    snapshot for every pixel and wiped everything before it.)
 - **Determinism**: all randomness is `hash01(row, frame_index, salt)` — NO
   wall-clock RNG. A given demo-timeline time renders byte-identically. Verified.
 - **Intensity**: `glitch_intensity(gt, beat)` = `(0.34 + 0.62*snare + 0.30*kick)
@@ -331,10 +346,16 @@ format conservatively up front: keep fences short and self-contained.
   above 0.5 lasts max 0.94 s, above 0.8 max 0.40 s; 90% of the time it is < 0.25.
   Pure function of time => deterministic. REQUIRED: the most intense period must
   not exceed ~1 s before returning to the subtle noise (user decree).
-- **Kill switch**: `PLASMA_GLITCH=<f32>` multiplies the intensity (default 1.0);
-  `PLASMA_GLITCH=0` disables the whole pass and makes output **byte-identical to
-  the pre-glitch renderer** — this is the regression check (verified IDENTICAL
-  at t=3/20/36).
+- **Kill switch**: the master `const GLITCH_ENABLED = false` disables the whole
+  pass and makes output **byte-identical to the pre-glitch renderer** — this is
+  the regression check. VERIFIED (this revision): `GLITCH_ENABLED=false` render
+  == e486cac (pre-glitch) render, byte-identical, all 480 MenInBlack frames.
+  There is NO env var for the glitch (user decree: no external controls).
+- **Refactor-neutrality check**: flipping the shipped defaults to
+  `GLITCH_SCANLINE_DRIFT_ENABLED=false` + `GLITCH_CHROMA_WARP_ENABLED=true`
+  reproduces the previous revision 60256bb byte-identically (verified, 480/480),
+  proving the constant refactor changed no maths. The new default (full drift ON,
+  chroma warp OFF, posterize + smear ON) is the intended look.
 - Scratch: the pixel-sort / smear row buffer is `FrameBuffers.glitch_row`, a
   persistent `Vec` cleared+refilled (AGENTS 11 — scratch pool, no per-frame alloc).
 - Reference frames measured for calibration (row-shift |mean| and max, ascending

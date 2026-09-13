@@ -27,10 +27,13 @@ Timeline (demo-local seconds, loops):
 The only other dependencies are pure-Rust: `image` (PNG only), plus `bumpalo` (a per-frame
 arena — one `Bump`, created once outside the render loop and reset each frame)
 and `arrayvec` (fixed-capacity, zero-heap arrays). A **music-reactive pixel-glitch
-post-process** (scanline drift, luminance pixel-sort streaks, block displacement,
-chromatic smear) runs on every finished frame in both the realtime window and the
-headless dumper; it is deterministic per timeline time and can be disabled with
-`PLASMA_GLITCH=0`. Audio (Ogg/Vorbis decoding +
+post-process** (full scanline/UV-warp drift, luminance pixel-sort streaks, block
+displacement, chroma-only scanline warp, chromatic smear, posterize) runs on
+every finished frame in both the realtime window and the headless dumper; it is
+deterministic per timeline time. Each effect has an on/off flag plus its numeric
+parameters as source `const`s in one labelled block ("GLITCH TUNING KNOBS" in
+`main.rs`) — there are deliberately **no environment variables** for it; edit the
+constants to tweak. Audio (Ogg/Vorbis decoding +
 mixing) is handled by **SDL3_mixer**, so there is no `lewton`/libvorbis build
 step of our own.
 

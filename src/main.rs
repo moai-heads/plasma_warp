@@ -1754,8 +1754,9 @@ fn mix_frames(a: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, b: &ImageBuffer<Rgb<u8>, Ve
 // ---------------- Pixel glitch post-process (mosh-style) ----------------
 // A realtime glitch pass applied to the FINISHED frame, after the scene and its
 // fades. It emulates the "mosh"/datamosh look: per-scanline horizontal drift,
-// luminance pixel-sort streaks, block displacement (codec-corruption bands) and
-// per-channel smear (chromatic fringing).
+// luminance pixel-sort streaks, block displacement (codec-corruption bands),
+// chroma-only scanline warp, per-channel smear (chromatic fringing) and
+// posterisation.
 //
 // Everything is hashed from (row, frame_index) -- deterministic and exactly
 // reproducible for a given demo-timeline time; there is NO wall-clock RNG
@@ -1763,26 +1764,59 @@ fn mix_frames(a: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, b: &ImageBuffer<Rgb<u8>, Ve
 //
 // `amount` in [0,1] scales every effect and its on/off probability. It is driven
 // by the music (see glitch_intensity) so the glitch breathes with the track.
-// Set PLASMA_GLITCH=0 to disable the whole pass (used for regression checks:
-// with it off, output is byte-identical to the pre-glitch renderer).
+//
+// NOTE: there are deliberately NO environment variables for the glitch. The
+// whole control surface is the block of constants immediately below, edited in
+// source -- the same philosophy as the scene-select / TIMELINE constants. To try
+// a combination, flip an `*_ENABLED` flag or nudge a numeric param; nothing else
+// needs to change.
 
-// A run of pixels along a scanline is eligible for pixel-sorting only if its
-// luma is at least this; this keeps flat dark background from smearing.
-const GLITCH_SORT_THRESHOLD: f32 = 0.30;
-// Runs shorter than this are left alone (sorting them does nothing visible).
-const GLITCH_SORT_MIN_RUN: usize = 5;
+// ############################################################################
+// # GLITCH TUNING KNOBS -- the single control surface. Edit in source.        #
+// ############################################################################
+
+// Master switch for the whole pass. `false` makes the renderer byte-identical to
+// the pre-glitch build (used as the regression check).
+const GLITCH_ENABLED: bool = true;
+
+// (1) Full-scanline horizontal drift -- the "UV warp". Shifts WHOLE rows (luma
+//     included), so the picture's structure itself ripples; this is the most
+//     visible of the family. Restored from the earlier revision because it read
+//     as noticeably more intense than the chroma-only variant (2) below.
+const GLITCH_SCANLINE_DRIFT_ENABLED: bool = true;
+const GLITCH_SCANLINE_DRIFT_WAVE: f32 = 48.0;   // travelling-wave amplitude, px at amount=1
+const GLITCH_SCANLINE_DRIFT_JITTER: f32 = 44.0; // hashed per-row jitter amplitude, px at amount=1
+
+// (2) Chroma-only scanline warp: the same travelling wave + jitter, but only the
+//     red/blue channels shift (green/luma stays put), so brightness holds still
+//     while colour smears. Softer than (1); kept available but off by default.
+const GLITCH_CHROMA_WARP_ENABLED: bool = false;
+const GLITCH_CHROMA_WARP_WAVE: f32 = 54.0;
+const GLITCH_CHROMA_WARP_JITTER: f32 = 50.0;
+
+// (3) Block displacement: hashed rectangles copied from elsewhere in the frame.
+const GLITCH_BLOCKS_ENABLED: bool = true;
+const GLITCH_BLOCKS_MAX: f32 = 26.0; // max block count at amount=1
+
+// (4) Luminance pixel-sort: contiguous bright runs reordered into streaks.
+const GLITCH_SORT_ENABLED: bool = true;
+const GLITCH_SORT_THRESHOLD: f32 = 0.30; // min run luma (0..1) to be eligible
+const GLITCH_SORT_MIN_RUN: usize = 5;    // runs shorter than this are left alone
+
+// (5) Per-channel smear: red shifts one way, blue the other (chromatic fringing).
+const GLITCH_CHROMA_SMEAR_ENABLED: bool = true;
+const GLITCH_CHROMA_SMEAR_MAX: f32 = 10.0; // max separation, px at amount=1
+
+// (6) Posterize: quantise every channel to a small number of levels.
+const GLITCH_POSTERIZE_ENABLED: bool = true;
+const GLITCH_POSTERIZE_LEVELS_HIGH: f32 = 48.0; // level count at amount=0 (subtle)
+const GLITCH_POSTERIZE_LEVELS_LOW: f32 = 4.0;   // level count at amount=1 (crushed)
 
 #[inline]
 fn pixel_luminance(pixel: Rgb<u8>) -> f32 {
     (0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32) / 255.0
 }
 
-// Slow "drift" envelope in [~0.06, 1.0] that swells the whole effect from
-// barely-noticeable up to full and back, over many seconds. Built from several
-// sine oscillators whose SPEEDS are themselves driven by slower sine
-// oscillators, so no single period ever repeats audibly -- the three components
-// beat against one another and the result reads as organic, not looping.
-// Pure function of time => deterministic (renders are reproducible).
 // One burst train: a phase oscillator whose rate and phase wander slowly; a
 // narrow smoothstep window around each crest yields a short spike. `window_frac`
 // is set so the time spent above the crest (== the spike's width in seconds)
@@ -1826,51 +1860,88 @@ fn glitch_drift_envelope(global_time: f32) -> f32 {
 // faint electric shimmer, plus strong spikes on the snare and kick impulses.
 // The whole thing is then scaled by the slow drift envelope above, so it
 // breathes from barely-noticeable to full over the course of the demo.
-// PLASMA_GLITCH overrides the overall multiplier (default 1.0; 0 disables).
+// Returns 0 (pass skipped) when the master switch is off.
 fn glitch_intensity(global_time: f32, beat: &BeatSync) -> f32 {
-    let multiplier = std::env::var("PLASMA_GLITCH")
-        .ok()
-        .and_then(|value| value.trim().parse::<f32>().ok())
-        .unwrap_or(1.0);
+    if !GLITCH_ENABLED {
+        return 0.0;
+    }
     let beat_driven = 0.34 + 0.62 * beat.punch(global_time) + 0.30 * beat.punch_kick(global_time);
     let envelope = glitch_drift_envelope(global_time);
-    (beat_driven * envelope * multiplier).clamp(0.0, 1.0)
+    (beat_driven * envelope).clamp(0.0, 1.0)
 }
 
 // Orchestrator. Snapshots the clean frame into the `scratch` buffer, then runs
-// each effect reading the snapshot and writing the visible frame. Using a
-// separate source means effects don't smear their own output.
+// each enabled effect. The effects in the first group read the clean snapshot
+// (`scratch`) and overwrite the regions they touch; the second group runs IN
+// PLACE, composing on top of whatever is already in the frame. Each is guarded
+// by its `*_ENABLED` knob above, so any subset can be switched off.
 fn apply_pixel_glitch(fb: &mut FrameBuffers, amount: f32, frame_index: usize) {
-    if amount <= 0.001 {
+    if !GLITCH_ENABLED || amount <= 0.001 {
         return;
     }
     for (destination, source) in fb.scratch.pixels_mut().zip(fb.image.pixels()) {
         *destination = *source;
     }
-    apply_block_displacement(&mut fb.image, &fb.scratch, amount, frame_index);
-    apply_luminance_pixel_sort(&mut fb.image, &fb.scratch, &mut fb.glitch_row, amount, frame_index);
-    // The next three run IN PLACE, each reading the already-glitched frame (via
-    // the row scratch) rather than the clean snapshot, so they COMPOSE on top of
-    // the blocks/sort instead of overwriting them:
-    //   - chroma-only scanline warp (UV warp on just the chroma channel)
-    //   - per-channel smear (separate red/blue chroma shift)
-    //   - posterize (quantise, applied last)
-    apply_chroma_scanline_warp(&mut fb.image, &mut fb.glitch_row, amount, frame_index);
-    apply_channel_smear(&mut fb.image, &mut fb.glitch_row, amount);
-    apply_posterize(&mut fb.image, amount);
+    // Group A -- read clean snapshot, write the frame.
+    if GLITCH_SCANLINE_DRIFT_ENABLED {
+        // Full-row UV warp first, so the sort/blocks below can still cut through
+        // it (they read the snapshot, not the warped frame).
+        apply_scanline_drift(&mut fb.image, &fb.scratch, amount, frame_index);
+    }
+    if GLITCH_BLOCKS_ENABLED {
+        apply_block_displacement(&mut fb.image, &fb.scratch, amount, frame_index);
+    }
+    if GLITCH_SORT_ENABLED {
+        apply_luminance_pixel_sort(&mut fb.image, &fb.scratch, &mut fb.glitch_row, amount, frame_index);
+    }
+    // Group B -- in place, each composing on the already-glitched frame.
+    if GLITCH_CHROMA_WARP_ENABLED {
+        apply_chroma_scanline_warp(&mut fb.image, &mut fb.glitch_row, amount, frame_index);
+    }
+    if GLITCH_CHROMA_SMEAR_ENABLED {
+        apply_channel_smear(&mut fb.image, &mut fb.glitch_row, amount);
+    }
+    if GLITCH_POSTERIZE_ENABLED {
+        apply_posterize(&mut fb.image, amount);
+    }
 }
 
-// Per-scanline horizontal drift: a smooth animated wave (so rows shift as a
-// travelling ripple) plus a larger hashed jitter on a random subset of rows.
+// Full-scanline horizontal drift (the "UV warp"): every channel of a row is
+// shifted together -- a smooth travelling wave, plus a larger hashed jitter on a
+// random subset of rows. Because luma moves with the colour, this reads far more
+// strongly than the chroma-only variant below.
+fn apply_scanline_drift(output: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
+                        source: &ImageBuffer<Rgb<u8>, Vec<u8>>,
+                        amount: f32, frame_index: usize) {
+    let wave_amplitude = amount * GLITCH_SCANLINE_DRIFT_WAVE;
+    let jitter_amplitude = amount * GLITCH_SCANLINE_DRIFT_JITTER;
+    for y in 0..H {
+        let wave = (y as f32 * 0.09 + frame_index as f32 * 0.55).sin()
+            + 0.6 * (y as f32 * 0.31 - frame_index as f32 * 0.9).sin();
+        let mut shift = wave_amplitude * wave * 0.5;
+        if hash01(y, frame_index, 7.7) < amount {
+            shift += (hash01(y, frame_index, 3.3) - 0.5) * 2.0 * jitter_amplitude;
+        }
+        let offset = shift.round() as i32;
+        if offset == 0 {
+            continue;
+        }
+        for x in 0..W {
+            let source_x = (x as i32 - offset).clamp(0, W as i32 - 1) as u32;
+            output[(x as u32, y as u32)] = source[(source_x, y as u32)];
+        }
+    }
+}
+
+// Chroma-only scanline warp: same travelling-wave + hashed jitter shape as the
+// full drift, but applied to the CHROMA channels only -- red shifts one way,
+// blue the other, green (luma) is left untouched. The picture's brightness
+// structure stays put while its colour smears row-to-row.
 fn apply_chroma_scanline_warp(output: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
                                row_buffer: &mut Vec<Rgb<u8>>,
                                amount: f32, frame_index: usize) {
-    // Same travelling-wave + hashed jitter as before, but applied to the CHROMA
-    // channels only: red shifts one way, blue the other, green (luma) is left
-    // untouched. So the picture's brightness structure stays put while its
-    // colour smears row-to-row -- a "UV warp on just the chroma channel".
-    let wave_amplitude = amount * 54.0;
-    let jitter_amplitude = amount * 50.0;
+    let wave_amplitude = amount * GLITCH_CHROMA_WARP_WAVE;
+    let jitter_amplitude = amount * GLITCH_CHROMA_WARP_JITTER;
     for y in 0..H {
         let wave = (y as f32 * 0.09 + frame_index as f32 * 0.55).sin()
             + 0.6 * (y as f32 * 0.31 - frame_index as f32 * 0.9).sin();
@@ -1901,7 +1972,10 @@ fn apply_chroma_scanline_warp(output: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
 // count falls with `amount`, so at the subtle floor it is barely visible and at
 // full blast it crushes to a few flat bands.
 fn apply_posterize(output: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, amount: f32) {
-    let levels = (48.0 - 44.0 * amount).round().clamp(2.0, 48.0);
+    let levels = (GLITCH_POSTERIZE_LEVELS_HIGH
+        - (GLITCH_POSTERIZE_LEVELS_HIGH - GLITCH_POSTERIZE_LEVELS_LOW) * amount)
+        .round()
+        .clamp(2.0, GLITCH_POSTERIZE_LEVELS_HIGH);
     let step = 255.0 / (levels - 1.0);
     for pixel in output.pixels_mut() {
         for channel in 0..3 {
@@ -1960,7 +2034,7 @@ fn apply_luminance_pixel_sort(output: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
 fn apply_block_displacement(output: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
                             source: &ImageBuffer<Rgb<u8>, Vec<u8>>,
                             amount: f32, frame_index: usize) {
-    let block_count = (amount * 26.0).round() as usize;
+    let block_count = (amount * GLITCH_BLOCKS_MAX).round() as usize;
     for block in 0..block_count {
         let block_width = (hash01(block, frame_index, 21.1) * 150.0 * amount) as usize + 10;
         let block_height = (hash01(block, frame_index, 22.2) * 60.0) as usize + 4;
@@ -1985,7 +2059,7 @@ fn apply_block_displacement(output: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
 fn apply_channel_smear(output: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
                        row_buffer: &mut Vec<Rgb<u8>>,
                        amount: f32) {
-    let separation = (amount * 10.0).round() as i32;
+    let separation = (amount * GLITCH_CHROMA_SMEAR_MAX).round() as i32;
     if separation == 0 {
         return;
     }
