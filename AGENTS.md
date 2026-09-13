@@ -51,11 +51,19 @@ format conservatively up front: keep fences short and self-contained.
     here:
     `rustc --edition 2021 -O src/main.rs --extern image=/root/rustlib/libimage.rlib --extern bumpalo=/root/rustlib/libbumpalo.rlib --extern arrayvec=/root/rustlib/libarrayvec.rlib -L dependency=/root/rustlib -o app`
 - Always recompile before rendering; never claim a fix from a stale binary.
-- **Warnings**: the project builds with ZERO rustc warnings by decree. The
-  policy is enforced in `Cargo.toml` via `[lints.rust] warnings = "allow"`, so
-  every rustc warning group is silenced for this package. Do not re-introduce
-  per-item `#[allow(dead_code)]` for the build to stay clean; the crate-level
-  policy covers it. (Clippy is separate and not part of this policy.)
+- **Warnings OFF by decree (for the owner's local reading).** The project builds
+  with ZERO rustc warnings. Enforced in `Cargo.toml` via
+  `[lints.rust] warnings = "allow"`, silencing every rustc warning group for the
+  package. The point is source readability when the owner devs locally — the
+  warnings are noise to them. Do NOT re-introduce per-item `#[allow(dead_code)]`;
+  the crate-level policy covers it. (Clippy is separate, not part of this policy.)
+- **Agent override — turn them back ON for yourself when useful.** Before
+  claiming a build is clean after adding code, run the build with the override to
+  actually SEE warnings (dead code, unused vars, etc.) without editing
+  `Cargo.toml`:
+  `RUSTFLAGS="-W warnings" cargo build --release --no-default-features`
+  (verified: this re-surfaces the normally-hidden warnings). Never commit the
+  change to `Cargo.toml`; the override is command-line only, for your own dev loop.
 
 ## 4. Sync data — hand-labelled ground truth
 - `beats.txt` = snare onsets, `kicks.txt` = kick onsets, both HAND-LABELLED in
