@@ -1847,22 +1847,30 @@ fn apply_pixel_glitch(fb: &mut FrameBuffers, amount: f32, frame_index: usize) {
     for (destination, source) in fb.scratch.pixels_mut().zip(fb.image.pixels()) {
         *destination = *source;
     }
-    apply_scanline_drift(&mut fb.image, &fb.scratch, amount, frame_index);
     apply_block_displacement(&mut fb.image, &fb.scratch, amount, frame_index);
     apply_luminance_pixel_sort(&mut fb.image, &fb.scratch, &mut fb.glitch_row, amount, frame_index);
-    // Channel smear runs LAST and reads the already-glitched frame (not the
-    // snapshot), so it adds fringing on top of the drift/sort/blocks rather
-    // than overwriting them.
+    // The next three run IN PLACE, each reading the already-glitched frame (via
+    // the row scratch) rather than the clean snapshot, so they COMPOSE on top of
+    // the blocks/sort instead of overwriting them:
+    //   - chroma-only scanline warp (UV warp on just the chroma channel)
+    //   - per-channel smear (separate red/blue chroma shift)
+    //   - posterize (quantise, applied last)
+    apply_chroma_scanline_warp(&mut fb.image, &mut fb.glitch_row, amount, frame_index);
     apply_channel_smear(&mut fb.image, &mut fb.glitch_row, amount);
+    apply_posterize(&mut fb.image, amount);
 }
 
 // Per-scanline horizontal drift: a smooth animated wave (so rows shift as a
 // travelling ripple) plus a larger hashed jitter on a random subset of rows.
-fn apply_scanline_drift(output: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
-                        source: &ImageBuffer<Rgb<u8>, Vec<u8>>,
-                        amount: f32, frame_index: usize) {
-    let wave_amplitude = amount * 48.0;
-    let jitter_amplitude = amount * 44.0;
+fn apply_chroma_scanline_warp(output: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
+                               row_buffer: &mut Vec<Rgb<u8>>,
+                               amount: f32, frame_index: usize) {
+    // Same travelling-wave + hashed jitter as before, but applied to the CHROMA
+    // channels only: red shifts one way, blue the other, green (luma) is left
+    // untouched. So the picture's brightness structure stays put while its
+    // colour smears row-to-row -- a "UV warp on just the chroma channel".
+    let wave_amplitude = amount * 54.0;
+    let jitter_amplitude = amount * 50.0;
     for y in 0..H {
         let wave = (y as f32 * 0.09 + frame_index as f32 * 0.55).sin()
             + 0.6 * (y as f32 * 0.31 - frame_index as f32 * 0.9).sin();
@@ -1874,9 +1882,33 @@ fn apply_scanline_drift(output: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
         if offset == 0 {
             continue;
         }
+        row_buffer.clear();
         for x in 0..W {
-            let source_x = (x as i32 - offset).clamp(0, W as i32 - 1) as u32;
-            output[(x as u32, y as u32)] = source[(source_x, y as u32)];
+            row_buffer.push(output[(x as u32, y as u32)]);
+        }
+        for x in 0..W {
+            let red_x = (x as i32 - offset).clamp(0, W as i32 - 1) as usize;
+            let blue_x = (x as i32 + offset).clamp(0, W as i32 - 1) as usize;
+            let red = row_buffer[red_x][0];
+            let green = row_buffer[x][1];
+            let blue = row_buffer[blue_x][2];
+            output[(x as u32, y as u32)] = Rgb([red, green, blue]);
+        }
+    }
+}
+
+// Posterize: quantise every channel to a small number of levels. The level
+// count falls with `amount`, so at the subtle floor it is barely visible and at
+// full blast it crushes to a few flat bands.
+fn apply_posterize(output: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, amount: f32) {
+    let levels = (48.0 - 44.0 * amount).round().clamp(2.0, 48.0);
+    let step = 255.0 / (levels - 1.0);
+    for pixel in output.pixels_mut() {
+        for channel in 0..3 {
+            let quantised = ((pixel[channel] as f32 / step).round() * step)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+            pixel[channel] = quantised;
         }
     }
 }

@@ -302,11 +302,19 @@ format conservatively up front: keep fences short and self-contained.
     (codec-corruption bands).
   - `apply_luminance_pixel_sort` — contiguous high-luma runs on a hashed subset
     of rows reordered bright-end-right (streaks).
-  - `apply_channel_smear` — red left / blue right chromatic fringing. This one
-    runs LAST and composites on the ALREADY-GLITCHED frame (via the `glitch_row`
-    scratch pool), NOT the snapshot — otherwise it overwrites the drift/sort/
-    blocks (that was a real bug: it read the clean snapshot for every pixel and
-    wiped everything before it).
+  - `apply_chroma_scanline_warp` — the per-row travelling-wave + hashed jitter,
+    but applied to the CHROMA channels only (red shifts one way, blue the other,
+    green/luma untouched). This replaced the old full-image scanline drift, which
+    read as "UV warp overdone"; now the UV warp hits just the chroma channel.
+  - `apply_channel_smear` — uniform red-left / blue-right per-channel separation
+    (separate chroma shift).
+  - `apply_posterize` — quantise every channel to a small number of levels
+    (level count falls from 48 toward 4 as `amount` rises). Applied LAST.
+  - COMPOSITION: block-displacement and pixel-sort read the CLEAN snapshot
+    (`fb.scratch`); the chroma warp, smear and posterize then run IN PLACE on the
+    already-glitched frame (via the `glitch_row` scratch) so they layer instead
+    of overwriting. (Original bug: an in-place pass read the clean snapshot for
+    every pixel and wiped everything before it.)
 - **Determinism**: all randomness is `hash01(row, frame_index, salt)` — NO
   wall-clock RNG. A given demo-timeline time renders byte-identically. Verified.
 - **Intensity**: `glitch_intensity(gt, beat)` = `(0.34 + 0.62*snare + 0.30*kick)
