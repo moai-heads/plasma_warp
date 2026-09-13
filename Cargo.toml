@@ -25,6 +25,12 @@ arrayvec = "0.7"
 # SDL3 + SDL3_mixer (the `mixer` feature links system SDL3_mixer).
 sdl3 = { version = "0.20", optional = true, features = ["mixer"] }
 
+# Project lint policy: silence ALL rustc warnings for this package. We keep the
+# codebase warning-free intentionally (dead_code helpers kept for experimentation,
+# the *_ENABLED glitch flags, etc.), and the project rule is a clean build.
+[lints.rust]
+warnings = "allow"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

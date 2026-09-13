@@ -51,6 +51,11 @@ format conservatively up front: keep fences short and self-contained.
     here:
     `rustc --edition 2021 -O src/main.rs --extern image=/root/rustlib/libimage.rlib --extern bumpalo=/root/rustlib/libbumpalo.rlib --extern arrayvec=/root/rustlib/libarrayvec.rlib -L dependency=/root/rustlib -o app`
 - Always recompile before rendering; never claim a fix from a stale binary.
+- **Warnings**: the project builds with ZERO rustc warnings by decree. The
+  policy is enforced in `Cargo.toml` via `[lints.rust] warnings = "allow"`, so
+  every rustc warning group is silenced for this package. Do not re-introduce
+  per-item `#[allow(dead_code)]` for the build to stay clean; the crate-level
+  policy covers it. (Clippy is separate and not part of this policy.)
 
 ## 4. Sync data — hand-labelled ground truth
 - `beats.txt` = snare onsets, `kicks.txt` = kick onsets, both HAND-LABELLED in
