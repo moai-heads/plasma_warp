@@ -1777,16 +1777,46 @@ fn pixel_luminance(pixel: Rgb<u8>) -> f32 {
     (0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32) / 255.0
 }
 
+// Slow "drift" envelope in [~0.06, 1.0] that swells the whole effect from
+// barely-noticeable up to full and back, over many seconds. Built from several
+// sine oscillators whose SPEEDS are themselves driven by slower sine
+// oscillators, so no single period ever repeats audibly -- the three components
+// beat against one another and the result reads as organic, not looping.
+// Pure function of time => deterministic (renders are reproducible).
+fn glitch_drift_envelope(global_time: f32) -> f32 {
+    let t = global_time;
+    // Angular speeds, each wobbled slowly by another oscillator.
+    let speed_a = 0.21 + 0.15 * (t * 0.043 + 0.7).sin();
+    let speed_b = 0.34 + 0.21 * (t * 0.031 + 2.1).cos();
+    let speed_c = 0.13 + 0.10 * (t * 0.017 + 4.3).sin();
+    // Phases, also drifting, so crests never land on a fixed grid.
+    let phase_a = 0.9 * (t * 0.11 + 0.5).sin();
+    let phase_b = 1.3 * (t * 0.07 + 1.9).cos();
+    let phase_c = 0.6 * (t * 0.05 + 3.1).sin();
+    let a = (t * speed_a + phase_a).sin();
+    let b = (t * speed_b + phase_b).sin();
+    let c = (t * speed_c + phase_c).sin();
+    // Weighted, normalised to [0,1]; then a smoothstep to steepen the middle
+    // so it LINGERS near "barely noticeable" and near "full", and crosses the
+    // middle quickly -- a full swing rather than a timid wobble.
+    let mixed = 0.5 + 0.5 * (0.5 * a + 0.3 * b + 0.2 * c);
+    let shaped = smooth(mixed.clamp(0.0, 1.0));
+    0.06 + 0.94 * shaped
+}
+
 // Music-reactive intensity in [0,1]: an ambient floor so the image always has a
 // faint electric shimmer, plus strong spikes on the snare and kick impulses.
+// The whole thing is then scaled by the slow drift envelope above, so it
+// breathes from barely-noticeable to full over the course of the demo.
 // PLASMA_GLITCH overrides the overall multiplier (default 1.0; 0 disables).
 fn glitch_intensity(global_time: f32, beat: &BeatSync) -> f32 {
     let multiplier = std::env::var("PLASMA_GLITCH")
         .ok()
         .and_then(|value| value.trim().parse::<f32>().ok())
         .unwrap_or(1.0);
-    let raw = 0.34 + 0.62 * beat.punch(global_time) + 0.30 * beat.punch_kick(global_time);
-    (raw * multiplier).clamp(0.0, 1.0)
+    let beat_driven = 0.34 + 0.62 * beat.punch(global_time) + 0.30 * beat.punch_kick(global_time);
+    let envelope = glitch_drift_envelope(global_time);
+    (beat_driven * envelope * multiplier).clamp(0.0, 1.0)
 }
 
 // Orchestrator. Snapshots the clean frame into the `scratch` buffer, then runs

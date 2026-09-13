@@ -309,8 +309,16 @@ format conservatively up front: keep fences short and self-contained.
     wiped everything before it).
 - **Determinism**: all randomness is `hash01(row, frame_index, salt)` — NO
   wall-clock RNG. A given demo-timeline time renders byte-identically. Verified.
-- **Intensity**: `glitch_intensity(gt, beat)` = `0.34 + 0.62*snare + 0.30*kick`,
-  clamped to [0,1]. Music-reactive: an ambient shimmer that spikes on hits.
+- **Intensity**: `glitch_intensity(gt, beat)` = `(0.34 + 0.62*snare + 0.30*kick)
+  * drift(gt)`, clamped to [0,1]. Music-reactive AND slowly drifting.
+- **Drift envelope** `glitch_drift_envelope(gt)` (see glitch_drift_envelope):
+  several sine oscillators whose SPEEDS are themselves wobbled by slower sines
+  (`speed = base + amp*sin(...)`) and whose PHASES also drift, then a smoothstep
+  to steepen the middle. Output ~[0.06,1.0], so the effect breathes from
+  barely-noticeable up to full and back over the demo (measured on the 46 s
+  timeline: env 0.124 at t=37 s up to 0.978 at t=21 s). Pure function of time,
+  so still deterministic. No single period repeats audibly -- the components beat
+  against each other.
 - **Kill switch**: `PLASMA_GLITCH=<f32>` multiplies the intensity (default 1.0);
   `PLASMA_GLITCH=0` disables the whole pass and makes output **byte-identical to
   the pre-glitch renderer** — this is the regression check (verified IDENTICAL
