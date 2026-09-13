@@ -1783,25 +1783,43 @@ fn pixel_luminance(pixel: Rgb<u8>) -> f32 {
 // oscillators, so no single period ever repeats audibly -- the three components
 // beat against one another and the result reads as organic, not looping.
 // Pure function of time => deterministic (renders are reproducible).
-fn glitch_drift_envelope(global_time: f32) -> f32 {
+// One burst train: a phase oscillator whose rate and phase wander slowly; a
+// narrow smoothstep window around each crest yields a short spike. `window_frac`
+// is set so the time spent above the crest (== the spike's width in seconds)
+// stays <= 1 s regardless of how the rate wobbles.
+fn glitch_burst(global_time: f32, base_rate: f32, phase_1: f32, phase_2: f32, window_frac: f32) -> f32 {
     let t = global_time;
-    // Angular speeds, each wobbled slowly by another oscillator.
-    let speed_a = 0.21 + 0.15 * (t * 0.043 + 0.7).sin();
-    let speed_b = 0.34 + 0.21 * (t * 0.031 + 2.1).cos();
-    let speed_c = 0.13 + 0.10 * (t * 0.017 + 4.3).sin();
-    // Phases, also drifting, so crests never land on a fixed grid.
-    let phase_a = 0.9 * (t * 0.11 + 0.5).sin();
-    let phase_b = 1.3 * (t * 0.07 + 1.9).cos();
-    let phase_c = 0.6 * (t * 0.05 + 3.1).sin();
-    let a = (t * speed_a + phase_a).sin();
-    let b = (t * speed_b + phase_b).sin();
-    let c = (t * speed_c + phase_c).sin();
-    // Weighted, normalised to [0,1]; then a smoothstep to steepen the middle
-    // so it LINGERS near "barely noticeable" and near "full", and crosses the
-    // middle quickly -- a full swing rather than a timid wobble.
-    let mixed = 0.5 + 0.5 * (0.5 * a + 0.3 * b + 0.2 * c);
-    let shaped = smooth(mixed.clamp(0.0, 1.0));
-    0.06 + 0.94 * shaped
+    // Phase and its instantaneous rate, both pure functions of time (no
+    // integration/state), so this stays deterministic.
+    let theta = t * base_rate
+        + 0.9 * (t * 0.031 + phase_1).sin()
+        + 0.5 * (t * 0.017 + phase_2).sin();
+    let rate = base_rate
+        + 0.9 * 0.031 * (t * 0.031 + phase_1).cos()
+        + 0.5 * 0.017 * (t * 0.017 + phase_2).cos();
+    // Distance to the nearest crest of sin(theta) (crest at theta = pi/2 + 2k*pi).
+    let mut offset = theta - std::f32::consts::FRAC_PI_2;
+    offset = (offset + std::f32::consts::PI).rem_euclid(2.0 * std::f32::consts::PI)
+        - std::f32::consts::PI;
+    let distance = offset.abs();
+    // Half-width in radians; /rate converts to seconds, so the spike lasts
+    // 2*window_frac seconds at most.
+    let half_width = window_frac * rate.max(1.0e-3);
+    smooth(((half_width - distance) / half_width).clamp(0.0, 1.0))
+}
+
+// Slow "drift" envelope in [~0.15, 1.0]. Most of the time it sits at the subtle
+// floor; every so often it spikes to FULL for under a second and dials back down
+// (the "most intense period lasts 1 s max" behaviour). Built from two burst
+// trains whose crests fall at incommensurate, slowly-wandering times, so the
+// spikes never land on an obviously repeating grid. Pure function of time =>
+// deterministic. `SUBTLE_FLOOR` is the resting glitch level.
+const GLITCH_SUBTLE_FLOOR: f32 = 0.15;
+fn glitch_drift_envelope(global_time: f32) -> f32 {
+    let burst_a = glitch_burst(global_time, 0.45, 0.7, 2.3, 0.5);
+    let burst_b = glitch_burst(global_time, 0.33, 2.9, 4.1, 0.5);
+    let burst = burst_a.max(burst_b);
+    GLITCH_SUBTLE_FLOOR + (1.0 - GLITCH_SUBTLE_FLOOR) * burst
 }
 
 // Music-reactive intensity in [0,1]: an ambient floor so the image always has a

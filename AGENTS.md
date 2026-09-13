@@ -311,14 +311,18 @@ format conservatively up front: keep fences short and self-contained.
   wall-clock RNG. A given demo-timeline time renders byte-identically. Verified.
 - **Intensity**: `glitch_intensity(gt, beat)` = `(0.34 + 0.62*snare + 0.30*kick)
   * drift(gt)`, clamped to [0,1]. Music-reactive AND slowly drifting.
-- **Drift envelope** `glitch_drift_envelope(gt)` (see glitch_drift_envelope):
-  several sine oscillators whose SPEEDS are themselves wobbled by slower sines
-  (`speed = base + amp*sin(...)`) and whose PHASES also drift, then a smoothstep
-  to steepen the middle. Output ~[0.06,1.0], so the effect breathes from
-  barely-noticeable up to full and back over the demo (measured on the 46 s
-  timeline: env 0.124 at t=37 s up to 0.978 at t=21 s). Pure function of time,
-  so still deterministic. No single period repeats audibly -- the components beat
-  against each other.
+- **Drift envelope** `glitch_drift_envelope(gt)`: rests at a SUBTLE floor
+  (`GLITCH_SUBTLE_FLOOR = 0.15`, i.e. the subtle glitch noise) and spikes to FULL
+  for under a second, then dials back down. Built from two `glitch_burst` trains:
+  each is a phase oscillator whose rate/phase wander slowly (nested trig, no
+  state) with a narrow smoothstep window around every crest. The window's
+  half-width is `window_frac * rate`, which fixes the SPIKE DURATION in seconds
+  independent of the wobble; `window_frac = 0.5` => <= 1 s. The two trains run at
+  incommensurate base rates (0.45, 0.33) so crests never land on an obvious grid.
+  Measured on the compiled fn over 400 s: env in [0.15, 1.00], mean 0.20; time
+  above 0.5 lasts max 0.94 s, above 0.8 max 0.40 s; 90% of the time it is < 0.25.
+  Pure function of time => deterministic. REQUIRED: the most intense period must
+  not exceed ~1 s before returning to the subtle noise (user decree).
 - **Kill switch**: `PLASMA_GLITCH=<f32>` multiplies the intensity (default 1.0);
   `PLASMA_GLITCH=0` disables the whole pass and makes output **byte-identical to
   the pre-glitch renderer** — this is the regression check (verified IDENTICAL
