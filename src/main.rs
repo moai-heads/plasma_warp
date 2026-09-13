@@ -1362,6 +1362,10 @@ struct FrameBuffers {
     image: ImageBuffer<Rgb<u8>, Vec<u8>>,
     scratch: ImageBuffer<Rgb<u8>, Vec<u8>>,
     depth: Vec<f32>,
+    // Scratch pool for the pixel-sort pass: one row's worth of pixels, reused
+    // (clear() + refill) every run so the glitch never allocates per frame
+    // (AGENTS 11 -- a persistent container owned here, treated as scratch).
+    glitch_row: Vec<Rgb<u8>>,
 }
 impl FrameBuffers {
     fn new() -> Self {
@@ -1369,6 +1373,7 @@ impl FrameBuffers {
             image: ImageBuffer::new(W as u32, H as u32),
             scratch: ImageBuffer::new(W as u32, H as u32),
             depth: vec![f32::INFINITY; W * H],
+            glitch_row: Vec::with_capacity(W),
         }
     }
 }
@@ -1422,6 +1427,9 @@ fn timeline_frame(bump: &Bump, fb: &mut FrameBuffers, sd: &SceneData, texs: &[&T
         }
         Scene::CyberPuzzle => {}
     }
+    // Realtime pixel-glitch, music-reactive and deterministic from `gt`.
+    let glitch = glitch_intensity(gt, &sd.beat);
+    apply_pixel_glitch(fb, glitch, (gt * FPS as f32) as usize);
 }
 
 // Render one timeline entry (headless frame dumper): `start` = demo-timeline
@@ -1480,6 +1488,9 @@ fn render_range(bump: &mut Bump, scene: Scene, start: f32, dur: f32,
             }
             Scene::CyberPuzzle => {}
         }
+        // Same pixel-glitch the realtime path applies, keyed on demo-timeline time.
+        let glitch = glitch_intensity(gt, beat);
+        apply_pixel_glitch(&mut fb, glitch, (gt * FPS as f32) as usize);
         fb.image.save(format!("{}/f{:05}.png", frames_dir(), idx)).unwrap();
         bump.reset();   // all bump scratch for this frame is done
         idx += 1;
@@ -1736,5 +1747,181 @@ fn mix_frames(a: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, b: &ImageBuffer<Rgb<u8>, Ve
             (pa[1] as f32 + (pb[1] as f32 - pa[1] as f32) * k) as u8,
             (pa[2] as f32 + (pb[2] as f32 - pa[2] as f32) * k) as u8,
         ]);
+    }
+}
+
+
+// ---------------- Pixel glitch post-process (mosh-style) ----------------
+// A realtime glitch pass applied to the FINISHED frame, after the scene and its
+// fades. It emulates the "mosh"/datamosh look: per-scanline horizontal drift,
+// luminance pixel-sort streaks, block displacement (codec-corruption bands) and
+// per-channel smear (chromatic fringing).
+//
+// Everything is hashed from (row, frame_index) -- deterministic and exactly
+// reproducible for a given demo-timeline time; there is NO wall-clock RNG
+// anywhere (project rule: renders must be byte-reproducible).
+//
+// `amount` in [0,1] scales every effect and its on/off probability. It is driven
+// by the music (see glitch_intensity) so the glitch breathes with the track.
+// Set PLASMA_GLITCH=0 to disable the whole pass (used for regression checks:
+// with it off, output is byte-identical to the pre-glitch renderer).
+
+// A run of pixels along a scanline is eligible for pixel-sorting only if its
+// luma is at least this; this keeps flat dark background from smearing.
+const GLITCH_SORT_THRESHOLD: f32 = 0.30;
+// Runs shorter than this are left alone (sorting them does nothing visible).
+const GLITCH_SORT_MIN_RUN: usize = 5;
+
+#[inline]
+fn pixel_luminance(pixel: Rgb<u8>) -> f32 {
+    (0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32) / 255.0
+}
+
+// Music-reactive intensity in [0,1]: an ambient floor so the image always has a
+// faint electric shimmer, plus strong spikes on the snare and kick impulses.
+// PLASMA_GLITCH overrides the overall multiplier (default 1.0; 0 disables).
+fn glitch_intensity(global_time: f32, beat: &BeatSync) -> f32 {
+    let multiplier = std::env::var("PLASMA_GLITCH")
+        .ok()
+        .and_then(|value| value.trim().parse::<f32>().ok())
+        .unwrap_or(1.0);
+    let raw = 0.34 + 0.62 * beat.punch(global_time) + 0.30 * beat.punch_kick(global_time);
+    (raw * multiplier).clamp(0.0, 1.0)
+}
+
+// Orchestrator. Snapshots the clean frame into the `scratch` buffer, then runs
+// each effect reading the snapshot and writing the visible frame. Using a
+// separate source means effects don't smear their own output.
+fn apply_pixel_glitch(fb: &mut FrameBuffers, amount: f32, frame_index: usize) {
+    if amount <= 0.001 {
+        return;
+    }
+    for (destination, source) in fb.scratch.pixels_mut().zip(fb.image.pixels()) {
+        *destination = *source;
+    }
+    apply_scanline_drift(&mut fb.image, &fb.scratch, amount, frame_index);
+    apply_block_displacement(&mut fb.image, &fb.scratch, amount, frame_index);
+    apply_luminance_pixel_sort(&mut fb.image, &fb.scratch, &mut fb.glitch_row, amount, frame_index);
+    // Channel smear runs LAST and reads the already-glitched frame (not the
+    // snapshot), so it adds fringing on top of the drift/sort/blocks rather
+    // than overwriting them.
+    apply_channel_smear(&mut fb.image, &mut fb.glitch_row, amount);
+}
+
+// Per-scanline horizontal drift: a smooth animated wave (so rows shift as a
+// travelling ripple) plus a larger hashed jitter on a random subset of rows.
+fn apply_scanline_drift(output: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
+                        source: &ImageBuffer<Rgb<u8>, Vec<u8>>,
+                        amount: f32, frame_index: usize) {
+    let wave_amplitude = amount * 48.0;
+    let jitter_amplitude = amount * 44.0;
+    for y in 0..H {
+        let wave = (y as f32 * 0.09 + frame_index as f32 * 0.55).sin()
+            + 0.6 * (y as f32 * 0.31 - frame_index as f32 * 0.9).sin();
+        let mut shift = wave_amplitude * wave * 0.5;
+        if hash01(y, frame_index, 7.7) < amount {
+            shift += (hash01(y, frame_index, 3.3) - 0.5) * 2.0 * jitter_amplitude;
+        }
+        let offset = shift.round() as i32;
+        if offset == 0 {
+            continue;
+        }
+        for x in 0..W {
+            let source_x = (x as i32 - offset).clamp(0, W as i32 - 1) as u32;
+            output[(x as u32, y as u32)] = source[(source_x, y as u32)];
+        }
+    }
+}
+
+// Luminance pixel-sort: on a hashed subset of rows, every contiguous run whose
+// luma clears the threshold is reordered bright-end-right, turning gradients
+// into hard streaks. (Measured from the reference: sorted runs trend brighter
+// left-to-right, i.e. ascending.)
+fn apply_luminance_pixel_sort(output: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
+                              source: &ImageBuffer<Rgb<u8>, Vec<u8>>,
+                              row_buffer: &mut Vec<Rgb<u8>>,
+                              amount: f32, frame_index: usize) {
+    let row_probability = amount * 0.95;
+    let minimum_run = (GLITCH_SORT_MIN_RUN as f32 * (0.5 + amount)).round() as usize;
+    for y in 0..H {
+        if hash01(y, frame_index, 11.3) >= row_probability {
+            continue;
+        }
+        let mut x = 0usize;
+        while x < W {
+            let pixel = source[(x as u32, y as u32)];
+            if pixel_luminance(pixel) < GLITCH_SORT_THRESHOLD {
+                x += 1;
+                continue;
+            }
+            let run_start = x;
+            while x < W && pixel_luminance(source[(x as u32, y as u32)]) >= GLITCH_SORT_THRESHOLD {
+                x += 1;
+            }
+            let run_end = x;
+            if run_end - run_start >= minimum_run {
+                row_buffer.clear();
+                for sample_x in run_start..run_end {
+                    row_buffer.push(source[(sample_x as u32, y as u32)]);
+                }
+                row_buffer.sort_by(|a, b| {
+                    pixel_luminance(*a).partial_cmp(&pixel_luminance(*b)).unwrap()
+                });
+                for (i, sample_x) in (run_start..run_end).enumerate() {
+                    output[(sample_x as u32, y as u32)] = row_buffer[i];
+                }
+            }
+        }
+    }
+}
+
+// Block displacement: a few hashed rectangles are copied from another part of
+// the snapshot into place -- the shifted-blocks look of a corrupt stream.
+fn apply_block_displacement(output: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
+                            source: &ImageBuffer<Rgb<u8>, Vec<u8>>,
+                            amount: f32, frame_index: usize) {
+    let block_count = (amount * 26.0).round() as usize;
+    for block in 0..block_count {
+        let block_width = (hash01(block, frame_index, 21.1) * 150.0 * amount) as usize + 10;
+        let block_height = (hash01(block, frame_index, 22.2) * 60.0) as usize + 4;
+        let max_x = W - block_width.min(W);
+        let max_y = H - block_height.min(H);
+        let block_x = (hash01(block, frame_index, 23.3) * max_x as f32) as usize;
+        let block_y = (hash01(block, frame_index, 24.4) * max_y as f32) as usize;
+        let shift_x = ((hash01(block, frame_index, 25.5) - 0.5) * 2.0 * amount * 70.0) as i32;
+        let shift_y = ((hash01(block, frame_index, 26.6) - 0.5) * 2.0 * amount * 22.0) as i32;
+        for y in block_y..(block_y + block_height).min(H) {
+            for x in block_x..(block_x + block_width).min(W) {
+                let source_x = (x as i32 + shift_x).clamp(0, W as i32 - 1) as u32;
+                let source_y = (y as i32 + shift_y).clamp(0, H as i32 - 1) as u32;
+                output[(x as u32, y as u32)] = source[(source_x, source_y)];
+            }
+        }
+    }
+}
+
+// Per-channel horizontal smear: red shifts one way, blue the other, green
+// stays put -- classic chromatic-aberration glitch fringing.
+fn apply_channel_smear(output: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
+                       row_buffer: &mut Vec<Rgb<u8>>,
+                       amount: f32) {
+    let separation = (amount * 10.0).round() as i32;
+    if separation == 0 {
+        return;
+    }
+    for y in 0..H {
+        // Snapshot the row first: we read shifted neighbours while writing.
+        row_buffer.clear();
+        for x in 0..W {
+            row_buffer.push(output[(x as u32, y as u32)]);
+        }
+        for x in 0..W {
+            let red_x = (x as i32 - separation).clamp(0, W as i32 - 1) as usize;
+            let blue_x = (x as i32 + separation).clamp(0, W as i32 - 1) as usize;
+            let red = row_buffer[red_x][0];
+            let green = row_buffer[x][1];
+            let blue = row_buffer[blue_x][2];
+            output[(x as u32, y as u32)] = Rgb([red, green, blue]);
+        }
     }
 }

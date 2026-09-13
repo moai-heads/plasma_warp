@@ -289,3 +289,33 @@ format conservatively up front: keep fences short and self-contained.
   through the right side of the mosaic; that is the texture's alpha map, not a bug.
 - COUNT: `BG_PYRAMID_COUNT = 12`, so roughly a few are inside the visible band at
   any instant.
+
+## 17. Pixel glitch post-process (mosh-style) — `apply_pixel_glitch`
+- A realtime glitch pass on the FINISHED frame, after the scene + its fades, in
+  BOTH paths: `timeline_frame` (realtime) and `render_range` (headless). Same
+  function, same inputs, so video == realtime.
+- Effects, all from the mosh/datamosh family and all reading a snapshot
+  (`fb.scratch`) so they don't smear their own output:
+  - `apply_scanline_drift` — per-scanline horizontal drift (smooth animated wave
+    + hashed jitter on a random subset of rows).
+  - `apply_block_displacement` — hashed rectangles copied from elsewhere
+    (codec-corruption bands).
+  - `apply_luminance_pixel_sort` — contiguous high-luma runs on a hashed subset
+    of rows reordered bright-end-right (streaks).
+  - `apply_channel_smear` — red left / blue right chromatic fringing. This one
+    runs LAST and composites on the ALREADY-GLITCHED frame (via the `glitch_row`
+    scratch pool), NOT the snapshot — otherwise it overwrites the drift/sort/
+    blocks (that was a real bug: it read the clean snapshot for every pixel and
+    wiped everything before it).
+- **Determinism**: all randomness is `hash01(row, frame_index, salt)` — NO
+  wall-clock RNG. A given demo-timeline time renders byte-identically. Verified.
+- **Intensity**: `glitch_intensity(gt, beat)` = `0.34 + 0.62*snare + 0.30*kick`,
+  clamped to [0,1]. Music-reactive: an ambient shimmer that spikes on hits.
+- **Kill switch**: `PLASMA_GLITCH=<f32>` multiplies the intensity (default 1.0);
+  `PLASMA_GLITCH=0` disables the whole pass and makes output **byte-identical to
+  the pre-glitch renderer** — this is the regression check (verified IDENTICAL
+  at t=3/20/36).
+- Scratch: the pixel-sort / smear row buffer is `FrameBuffers.glitch_row`, a
+  persistent `Vec` cleared+refilled (AGENTS 11 — scratch pool, no per-frame alloc).
+- Reference frames measured for calibration (row-shift |mean| and max, ascending
+  run length): the pass lands max shift 16 (ref 16), asc-run max ~300 (ref ~295).
