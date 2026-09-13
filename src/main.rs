@@ -1784,13 +1784,13 @@ const GLITCH_ENABLED: bool = true;
 //     visible of the family. Restored from the earlier revision because it read
 //     as noticeably more intense than the chroma-only variant (2) below.
 const GLITCH_SCANLINE_DRIFT_ENABLED: bool = true;
-const GLITCH_SCANLINE_DRIFT_WAVE: f32 = 48.0;   // travelling-wave amplitude, px at amount=1
+const GLITCH_SCANLINE_DRIFT_WAVE: f32 = 8.0;   // travelling-wave amplitude, px at amount=1
 const GLITCH_SCANLINE_DRIFT_JITTER: f32 = 44.0; // hashed per-row jitter amplitude, px at amount=1
 
 // (2) Chroma-only scanline warp: the same travelling wave + jitter, but only the
 //     red/blue channels shift (green/luma stays put), so brightness holds still
 //     while colour smears. Softer than (1); kept available but off by default.
-const GLITCH_CHROMA_WARP_ENABLED: bool = false;
+const GLITCH_CHROMA_WARP_ENABLED: bool = true;
 const GLITCH_CHROMA_WARP_WAVE: f32 = 54.0;
 const GLITCH_CHROMA_WARP_JITTER: f32 = 50.0;
 
